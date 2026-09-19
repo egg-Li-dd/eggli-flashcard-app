@@ -1,0 +1,7 @@
+- [x] Spark Lite 模型名在所有调用路径（generateTestQuestions, callAiProvider, callAiForGrading, sendAiRequest）中一致且正确
+- [x] classifyError 能识别 HTTP 401/403/429/500 状态码并给出可读的中文提示
+- [x] Spark Lite 分类检测弹窗不再显示"AI调用失败"，成功生成题目或显示具体的错误原因
+- [x] Spark Lite 单元检测同样正常工作
+- [x] 其他模型（DeepSeek/Qwen/Doubao）的分类检测不受影响
+- [x] `npm run build` 成功
+- [x] `npm test` 全部通过（除了已有的 1 个无关测试失败）

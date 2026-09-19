@@ -1,0 +1,10 @@
+- [ ] Checkpoint 1: `downloadWithMultipleConnections` 方法正确实现，支持 4 个并行分片下载
+- [ ] Checkpoint 2: HEAD 请求正确检测服务器是否支持 Range 请求
+- [ ] Checkpoint 3: 不支持 Range 时自动回退到单连接下载，不报错
+- [ ] Checkpoint 4: 各分片使用 RandomAccessFile 写入正确位置，下载完成后文件完整可用
+- [ ] Checkpoint 5: 进度聚合正确——总进度 = 所有分片已下载字节 / 文件总大小
+- [ ] Checkpoint 6: 下载速度每秒更新，UI 显示 "X.X MB/s"
+- [ ] Checkpoint 7: 单个分片失败时自动重试 3 次，重试失败后整个下载失败
+- [ ] Checkpoint 8: 取消下载时所有分片线程正确停止
+- [ ] Checkpoint 9: 前端 UI 正确显示速度、进度、下载模式提示
+- [ ] Checkpoint 10: 编译通过，Debug APK 打包成功

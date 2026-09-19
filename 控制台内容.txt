@@ -1,0 +1,90 @@
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/chapters?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 404 ()
+client:525 [sync] 上传 章节 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+client:525 [sync] 云端推送失败: Object
+console.<computed> @ client:525
+pushToCloud @ sync.js:812
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/units?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 单元 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/cards?on_conflict=id&columns=%22id%22%2C%22unit_id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22front%22%2C%22back%22%2C%22knowledge_point%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 卡片 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/units?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 单元 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+client:525 [sync] 云端推送失败: Object
+console.<computed> @ client:525
+pushToCloud @ sync.js:812
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/chapters?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 404 ()
+client:525 [sync] 上传 章节 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/cards?on_conflict=id&columns=%22id%22%2C%22unit_id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22front%22%2C%22back%22%2C%22knowledge_point%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 卡片 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/chapters?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 404 ()
+client:525 [sync] 上传 章节 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+client:525 [sync] 云端推送失败: Object
+console.<computed> @ client:525
+pushToCloud @ sync.js:812
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/units?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 单元 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/cards?on_conflict=id&columns=%22id%22%2C%22unit_id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22front%22%2C%22back%22%2C%22knowledge_point%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 卡片 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/units?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 单元 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+client:525 [sync] 云端推送失败: Object
+console.<computed> @ client:525
+pushToCloud @ sync.js:812
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/chapters?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 404 ()
+client:525 [sync] 上传 章节 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/cards?on_conflict=id&columns=%22id%22%2C%22unit_id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22front%22%2C%22back%22%2C%22knowledge_point%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 卡片 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/units?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/chapters?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 404 ()
+client:525 [sync] 上传 单元 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+client:525 [sync] 云端推送失败: Object
+console.<computed> @ client:525
+pushToCloud @ sync.js:812
+client:525 [sync] 上传 章节 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/cards?on_conflict=id&columns=%22id%22%2C%22unit_id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22front%22%2C%22back%22%2C%22knowledge_point%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 卡片 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/chapters?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 404 ()
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/units?on_conflict=id&columns=%22id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22name%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 章节 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+client:525 [sync] 云端推送失败: Object
+console.<computed> @ client:525
+pushToCloud @ sync.js:812
+client:525 [sync] 上传 单元 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768
+ibcrvzllmzurepnhajii.supabase.co/rest/v1/cards?on_conflict=id&columns=%22id%22%2C%22unit_id%22%2C%22category_id%22%2C%22chapter_id%22%2C%22front%22%2C%22back%22%2C%22knowledge_point%22%2C%22created_at%22%2C%22updated_at%22%2C%22user_id%22:1  Failed to load resource: the server responded with a status of 400 ()
+client:525 [sync] 上传 卡片 失败: Object
+console.<computed> @ client:525
+uploadTable @ sync.js:768

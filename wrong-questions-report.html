@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>错题本功能可视化分析报告</title>
+<style>
+  :root {
+    --primary: #6366f1;
+    --primary-light: #e0e7ff;
+    --primary-dark: #4f46e5;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --info: #06b6d4;
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --text: #1e293b;
+    --text-secondary: #64748b;
+    --border: #e2e8f0;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+    --shadow: 0 4px 12px rgba(0,0,0,0.08);
+    --shadow-lg: 0 10px 25px rgba(0,0,0,0.1);
+    --radius: 12px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  .container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 24px;
+  }
+
+  /* 头部 */
+  .header {
+    text-align: center;
+    padding: 40px 20px;
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #ec4899 100%);
+    border-radius: var(--radius);
+    color: white;
+    margin-bottom: 32px;
+    box-shadow: var(--shadow-lg);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .header::before {
+    content: '';
+    position: absolute;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+    animation: pulse 4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); opacity: 0.5; }
+    50% { transform: scale(1.1); opacity: 0.8; }
+  }
+
+  .header h1 {
+    font-size: 2.5rem;
+    margin-bottom: 12px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .header .subtitle {
+    font-size: 1.1rem;
+    opacity: 0.95;
+    position: relative;
+    z-index: 1;
+  }
+
+  .header .date {
+    margin-top: 12px;
+    font-size: 0.9rem;
+    opacity: 0.8;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* 章节导航 */
+  .toc {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 32px;
+    box-shadow: var(--shadow);
+  }
+
+  .toc h2 {
+    font-size: 1.3rem;
+    margin-bottom: 16px;
+    color: var(--primary-dark);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .toc-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+  }
+
+  .toc-item {
+    padding: 12px 16px;
+    background: var(--primary-light);
+    border-radius: 8px;
+    color: var(--primary-dark);
+    text-decoration: none;
+    font-weight: 500;
+    transition: all 0.2s;
+    border-left: 4px solid var(--primary);
+  }
+
+  .toc-item:hover {
+    transform: translateX(4px);
+    background: #c7d2fe;
+  }
+
+  /* 章节 */
+  .section {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 32px;
+    margin-bottom: 24px;
+    box-shadow: var(--shadow);
+  }
+
+  .section-title {
+    font-size: 1.8rem;
+    color: var(--primary-dark);
+    margin-bottom: 8px;
+    padding-bottom: 12px;
+    border-bottom: 3px solid var(--primary-light);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .section-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: linear-gradient(135deg, var(--primary), #8b5cf6);
+    color: white;
+    border-radius: 50%;
+    font-weight: 700;
+    font-size: 1rem;
+  }
+
+  .section-desc {
+    color: var(--text-secondary);
+    margin-bottom: 24px;
+    font-size: 1rem;
+  }
+
+  /* 统计卡片 */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .stat-card {
+    background: linear-gradient(135deg, var(--surface) 0%, #f1f5f9 100%);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    text-align: center;
+    transition: all 0.3s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 4px;
+    background: linear-gradient(90deg, var(--primary), #8b5cf6);
+  }
+
+  .stat-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .stat-value {
+    font-size: 2.5rem;
+    font-weight: 700;
+    color: var(--primary-dark);
+    margin: 8px 0;
+  }
+
+  .stat-label {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  .stat-icon {
+    font-size: 2rem;
+    margin-bottom: 8px;
+  }
+
+  /* 文件列表 */
+  .file-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .file-item {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px;
+    background: #f1f5f9;
+    border-radius: 8px;
+    border-left: 4px solid var(--primary);
+    transition: all 0.2s;
+  }
+
+  .file-item:hover {
+    background: #e0e7ff;
+    transform: translateX(4px);
+  }
+
+  .file-icon {
+    width: 48px;
+    height: 48px;
+    background: linear-gradient(135deg, var(--primary), #8b5cf6);
+    color: white;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    flex-shrink: 0;
+  }
+
+  .file-info { flex: 1; min-width: 0; }
+  .file-path {
+    font-family: 'SF Mono', Consolas, monospace;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+  }
+  .file-name {
+    font-weight: 600;
+    color: var(--text);
+    font-size: 1rem;
+  }
+  .file-role {
+    font-size: 0.85rem;
+    color: var(--primary-dark);
+    background: var(--primary-light);
+    padding: 2px 8px;
+    border-radius: 4px;
+    display: inline-block;
+    margin-top: 4px;
+  }
+
+  /* 流程图 */
+  .flow-diagram {
+    background: linear-gradient(135deg, #f0f9ff 0%, #fdf4ff 100%);
+    border-radius: var(--radius);
+    padding: 32px;
+    margin: 24px 0;
+    border: 2px dashed var(--primary-light);
+  }
+
+  .flow-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .flow-step {
+    background: white;
+    border-radius: 12px;
+    padding: 16px 24px;
+    box-shadow: var(--shadow);
+    width: 100%;
+    max-width: 500px;
+    text-align: center;
+    position: relative;
+    border: 2px solid var(--border);
+    transition: all 0.3s;
+  }
+
+  .flow-step:hover {
+    border-color: var(--primary);
+    transform: scale(1.02);
+  }
+
+  .flow-step-num {
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 32px;
+    height: 32px;
+    background: linear-gradient(135deg, var(--primary), #8b5cf6);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.9rem;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .flow-step-title {
+    font-weight: 600;
+    color: var(--primary-dark);
+    margin-top: 4px;
+    margin-bottom: 4px;
+    font-size: 1rem;
+  }
+
+  .flow-step-desc {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+  }
+
+  .flow-arrow {
+    font-size: 1.5rem;
+    color: var(--primary);
+    animation: bounce 2s ease-in-out infinite;
+  }
+
+  @keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(4px); }
+  }
+
+  /* 数据结构表格 */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .data-table thead {
+    background: linear-gradient(135deg, var(--primary), #8b5cf6);
+    color: white;
+  }
+
+  .data-table th,
+  .data-table td {
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .data-table th {
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+
+  .data-table tbody tr:hover {
+    background: #f1f5f9;
+  }
+
+  .data-table td {
+    font-size: 0.9rem;
+    font-family: 'SF Mono', Consolas, monospace;
+  }
+
+  .field-type {
+    background: var(--primary-light);
+    color: var(--primary-dark);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    display: inline-block;
+  }
+
+  .field-desc {
+    font-family: -apple-system, sans-serif;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+  }
+
+  /* 功能模块 */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+  }
+
+  .feature-card {
+    background: linear-gradient(135deg, #fff 0%, #f8fafc 100%);
+    border: 2px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    transition: all 0.3s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .feature-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 8px; height: 100%;
+    background: linear-gradient(180deg, var(--primary), #8b5cf6);
+  }
+
+  .feature-card:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-lg);
+    border-color: var(--primary);
+  }
+
+  .feature-icon {
+    font-size: 2.5rem;
+    margin-bottom: 12px;
+  }
+
+  .feature-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+
+  .feature-desc {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  .feature-methods {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--border);
+  }
+
+  .feature-methods code {
+    background: var(--primary-light);
+    color: var(--primary-dark);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-family: 'SF Mono', Consolas, monospace;
+    margin-right: 4px;
+    display: inline-block;
+    margin-bottom: 4px;
+  }
+
+  /* 代码片段 */
+  .code-block {
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 20px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font-family: 'SF Mono', Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.7;
+  }
+
+  .code-block .comment { color: #94a3b8; }
+  .code-block .keyword { color: #f472b6; }
+  .code-block .string { color: #a5f3fc; }
+  .code-block .func { color: #fbbf24; }
+
+  /* 数据流图 */
+  .dataflow {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+    padding: 24px;
+    background: linear-gradient(135deg, #ecfdf5 0%, #f0f9ff 100%);
+    border-radius: var(--radius);
+    margin: 24px 0;
+  }
+
+  .dataflow-node {
+    background: white;
+    padding: 16px 20px;
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    text-align: center;
+    min-width: 120px;
+    border: 2px solid var(--success);
+    transition: all 0.3s;
+  }
+
+  .dataflow-node:hover {
+    transform: scale(1.05);
+    border-color: var(--primary);
+  }
+
+  .dataflow-icon {
+    font-size: 2rem;
+    margin-bottom: 8px;
+  }
+
+  .dataflow-label {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text);
+  }
+
+  .dataflow-sublabel {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+
+  .dataflow-arrow {
+    font-size: 1.8rem;
+    color: var(--primary);
+    font-weight: 700;
+  }
+
+  /* 技术亮点 */
+  .highlight-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+  }
+
+  .highlight-item {
+    background: white;
+    border: 2px solid var(--border);
+    border-left: 6px solid var(--success);
+    border-radius: 10px;
+    padding: 16px;
+    transition: all 0.2s;
+  }
+
+  .highlight-item:hover {
+    border-color: var(--primary);
+    box-shadow: var(--shadow);
+  }
+
+  .highlight-title {
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .highlight-title::before {
+    content: '✓';
+    color: var(--success);
+    font-weight: 900;
+  }
+
+  .highlight-desc {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+  }
+
+  /* 警告/注意 */
+  .notice-box {
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border-left: 6px solid var(--warning);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 16px 0;
+  }
+
+  .notice-box .title {
+    font-weight: 700;
+    color: #92400e;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .notice-box .content {
+    color: #78350f;
+    font-size: 0.9rem;
+  }
+
+  /* 页脚 */
+  .footer {
+    text-align: center;
+    padding: 32px;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+  }
+
+  @media (max-width: 768px) {
+    .container { padding: 12px; }
+    .section { padding: 20px; }
+    .header h1 { font-size: 1.8rem; }
+    .stat-value { font-size: 2rem; }
+    .flow-step { padding: 12px 16px; }
+    .data-table { font-size: 0.8rem; }
+    .data-table th,
+    .data-table td { padding: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- 头部 -->
+  <div class="header">
+    <h1>📝 错题本功能分析报告</h1>
+    <div class="subtitle">功能实现流程 · 数据结构 · 模块交互 · 技术栈可视化</div>
+    <div class="date" id="report-date"></div>
+  </div>
+
+  <!-- 目录 -->
+  <div class="toc">
+    <h2>📑 报告目录</h2>
+    <div class="toc-list">
+      <a href="#overview" class="toc-item">1. 功能概览</a>
+      <a href="#structure" class="toc-item">2. 代码文件结构</a>
+      <a href="#flow" class="toc-item">3. 完整业务流程</a>
+      <a href="#database" class="toc-item">4. 数据库设计</a>
+      <a href="#features" class="toc-item">5. 核心功能模块</a>
+      <a href="#dataflow" class="toc-item">6. 数据流与调用链</a>
+      <a href="#highlights" class="toc-item">7. 技术亮点</a>
+    </div>
+  </div>
+
+  <!-- 1. 功能概览 -->
+  <div class="section" id="overview">
+    <h2 class="section-title"><span class="section-num">1</span>功能概览</h2>
+    <p class="section-desc">错题本是 AI 学习辅助应用的核心功能之一，负责收集用户在各类检测中答错的题目，帮助用户针对性复习和巩固薄弱知识点。</p>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon">📄</div>
+        <div class="stat-value">7+</div>
+        <div class="stat-label">核心文件参与</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🔧</div>
+        <div class="stat-value">12+</div>
+        <div class="stat-label">数据库操作函数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🔀</div>
+        <div class="stat-value">3 层</div>
+        <div class="stat-label">分组展示层级</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">♻️</div>
+        <div class="stat-value">双向</div>
+        <div class="stat-label">错题→重做→更新</div>
+      </div>
+    </div>
+
+    <div class="feature-grid" style="margin-top: 16px;">
+      <div class="feature-card">
+        <div class="feature-icon">📥</div>
+        <div class="feature-title">自动收集</div>
+        <div class="feature-desc">检测答题结束后自动将错题写入 IndexedDB 的 wrongAnswers 表，支持按卡片/题目维度统计错误次数。</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🗂️</div>
+        <div class="feature-title">三层分组</div>
+        <div class="feature-desc">按「分类 → 章节 → 单元」三级维度分组展示，支持每层独立的错题重做和统计。</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔁</div>
+        <div class="feature-title">错题重做</div>
+        <div class="feature-desc">一键跳转到单元检测页面以模式=错题模式进行专项练习，巩固薄弱知识点。</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📊</div>
+        <div class="feature-title">统计分析</div>
+        <div class="feature-desc">展示错题总数、涉及分类数、每题错误次数与最后错误时间，便于追踪学习进度。</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔄</div>
+        <div class="feature-title">数据同步</div>
+        <div class="feature-desc">支持云端数据同步（wrong_answers 表），在多设备间保持错题记录一致。</div>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🧠</div>
+        <div class="feature-title">AI 评分集成</div>
+        <div class="feature-desc">通过 testGradingService 的 AI 评分引擎（讯飞/DeepSeek）自动判定主观题对错并写入错题本。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. 代码文件结构 -->
+  <div class="section" id="structure">
+    <h2 class="section-title"><span class="section-num">2</span>代码文件结构</h2>
+    <p class="section-desc">错题本功能由以下核心文件协同完成，覆盖 UI 展示、数据操作、业务逻辑和评分服务。</p>
+
+    <div class="file-list">
+
+      <div class="file-item">
+        <div class="file-icon">📱</div>
+        <div class="file-info">
+          <div class="file-path">src/pages/</div>
+          <div class="file-name">WrongQuestionsPage.jsx</div>
+          <div class="file-role">UI 页面 · 主入口</div>
+        </div>
+      </div>
+
+      <div class="file-item">
+        <div class="file-icon">📝</div>
+        <div class="file-info">
+          <div class="file-path">src/pages/</div>
+          <div class="file-name">UnitTestPage.jsx</div>
+          <div class="file-role">答题页面 · 产生错题的源头</div>
+        </div>
+      </div>
+
+      <div class="file-item">
+        <div class="file-icon">🧠</div>
+        <div class="file-info">
+          <div class="file-path">src/services/</div>
+          <div class="file-name">testGradingService.js</div>
+          <div class="file-role">AI 评分服务 · 更新掌握程度 & 写入错题</div>
+        </div>
+      </div>
+
+      <div class="file-item">
+        <div class="file-icon">💾</div>
+        <div class="file-info">
+          <div class="file-path">src/services/</div>
+          <div class="file-name">db.js</div>
+          <div class="file-role">数据库服务 · wrongAnswers 表操作（12+ 函数）</div>
+        </div>
+      </div>
+
+      <div class="file-item">
+        <div class="file-icon">🔀</div>
+        <div class="file-info">
+          <div class="file-path">src/services/</div>
+          <div class="file-name">sync.js</div>
+          <div class="file-role">云端同步 · wrong_answers 表上传/下载</div>
+        </div>
+      </div>
+
+      <div class="file-item">
+        <div class="file-icon">🧭</div>
+        <div class="file-info">
+          <div class="file-path">src/pages/</div>
+          <div class="file-name">UnitTestMain.jsx</div>
+          <div class="file-role">入口页面 · "我的错题本"按钮导航</div>
+        </div>
+      </div>
+
+      <div class="file-item">
+        <div class="file-icon">⚛️</div>
+        <div class="file-info">
+          <div class="file-path">src/</div>
+          <div class="file-name">App.jsx</div>
+          <div class="file-role">路由定义 · /test/wrong 路径注册</div>
+        </div>
+      </div>
+
+      <div class="file-item">
+        <div class="file-icon">🎴</div>
+        <div class="file-info">
+          <div class="file-path">src/pages/</div>
+          <div class="file-name">Memorize.jsx</div>
+          <div class="file-role">背诵页面 · weak 模式基于错题本筛选卡片</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 3. 完整业务流程 -->
+  <div class="section" id="flow">
+    <h2 class="section-title"><span class="section-num">3</span>完整业务流程</h2>
+    <p class="section-desc">从用户开始答题到错题被收集、展示、重做的完整闭环流程图。</p>
+
+    <div class="flow-diagram">
+      <div class="flow-steps">
+
+        <div class="flow-step">
+          <div class="flow-step-num">1</div>
+          <div class="flow-step-title">进入单元检测</div>
+          <div class="flow-step-desc">用户在 UnitTestMain 点击单元 → 跳转 UnitTestPage (mode=unit/category/wrong)</div>
+        </div>
+        <div class="flow-arrow">↓</div>
+
+        <div class="flow-step">
+          <div class="flow-step-num">2</div>
+          <div class="flow-step-title">答题过程</div>
+          <div class="flow-step-desc">用户逐题作答单选/多选/判断/填空/简答题 → 本地即时反馈或等待提交</div>
+        </div>
+        <div class="flow-arrow">↓</div>
+
+        <div class="flow-step">
+          <div class="flow-step-num">3</div>
+          <div class="flow-step-title">提交全部答案</div>
+          <div class="flow-step-desc">点击"提交" → 触发 gradeTest() 函数 / 本地评分逻辑</div>
+        </div>
+        <div class="flow-arrow">↓</div>
+
+        <div class="flow-step">
+          <div class="flow-step-num">4</div>
+          <div class="flow-step-title">AI / 本地评分判定</div>
+          <div class="flow-step-desc">客观题本地100%准确评分 · 主观题调用 AI (讯飞/DeepSeek) 或降级为关键词匹配</div>
+        </div>
+        <div class="flow-arrow">↓</div>
+
+        <div class="flow-step">
+          <div class="flow-step-num">5</div>
+          <div class="flow-step-title">写入错题记录</div>
+          <div class="flow-step-desc">调用 addWrongAnswer(cardId, categoryId, questionType, {...}) → wrongAnswers 表新增或更新 count+1</div>
+        </div>
+        <div class="flow-arrow">↓</div>
+
+        <div class="flow-step">
+          <div class="flow-step-num">6</div>
+          <div class="flow-step-title">更新卡片掌握状态</div>
+          <div class="flow-step-desc">同步调用 setCardStatus() → 将答错卡片标记为"待复习"；答对标记为"已掌握"</div>
+        </div>
+        <div class="flow-arrow">↓</div>
+
+        <div class="flow-step">
+          <div class="flow-step-num">7</div>
+          <div class="flow-step-title">进入错题本查看</div>
+          <div class="flow-step-desc">点击"我的错题本" → WrongQuestionsPage 通过 getAllWrongAnswers() 加载全部错题</div>
+        </div>
+        <div class="flow-arrow">↓</div>
+
+        <div class="flow-step">
+          <div class="flow-step-num">8</div>
+          <div class="flow-step-title">三层分组展示</div>
+          <div class="flow-step-desc">buildTree() 构建 分类→章节→单元 三级结构，按错题数降序排列</div>
+        </div>
+        <div class="flow-arrow">↓</div>
+
+        <div class="flow-step">
+          <div class="flow-step-num">9</div>
+          <div class="flow-step-title">错题重做</div>
+          <div class="flow-step-desc">点击"错题重做" → 跳转 UnitTestPage?mode=wrong&categoryId=xxx 开始专项训练</div>
+        </div>
+        <div class="flow-arrow">↓</div>
+
+        <div class="flow-step">
+          <div class="flow-step-num">10</div>
+          <div class="flow-step-title">闭环更新</div>
+          <div class="flow-step-desc">重做后答对 → clearWrongAnswer() 清除错题记录；答错 → count 继续累加并更新 lastWrongAt</div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="notice-box">
+      <div class="title">💡 设计亮点</div>
+      <div class="content">错题记录与卡片掌握状态 <b>同步更新</b>，同时在 Memorize 模块的 weak 模式可以直接基于错题表筛选出薄弱卡片进行背诵复习，实现"检测 → 错题 → 背诵复习"的完整学习闭环。</div>
+    </div>
+  </div>
+
+  <!-- 4. 数据库设计 -->
+  <div class="section" id="database">
+    <h2 class="section-title"><span class="section-num">4</span>数据库设计</h2>
+    <p class="section-desc">localStorage (IndexedDB via Dexie) 的 wrongAnswers 表字段结构，以及云端同步的对应表 wrong_answers。</p>
+
+    <h3 style="margin: 20px 0 12px; color: var(--primary-dark);">📋 wrongAnswers 表字段清单</h3>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>字段名</th>
+          <th>类型</th>
+          <th>说明</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>id</td><td><span class="field-type">string (PK)</span></td><td class="field-desc">主键，由 generateId() 生成的唯一 ID</td></tr>
+        <tr><td>cardId</td><td><span class="field-type">string</span></td><td class="field-desc">关联的卡片 ID（可为空，独立题目用 questionId 替代）</td></tr>
+        <tr><td>categoryId</td><td><span class="field-type">string</span></td><td class="field-desc">所属分类 ID，用于按分类聚合展示</td></tr>
+        <tr><td>unitId</td><td><span class="field-type">string</span></td><td class="field-desc">所属单元 ID（v5 新增），用于按单元筛选</td></tr>
+        <tr><td>chapterId</td><td><span class="field-type">string</span></td><td class="field-desc">所属章节 ID（v7 新增），支持章节维度查询</td></tr>
+        <tr><td>questionId</td><td><span class="field-type">string</span></td><td class="field-desc">题目 ID（cardId 为空时用此字段）</td></tr>
+        <tr><td>questionType</td><td><span class="field-type">string</span></td><td class="field-desc">题目类型：single_choice / multi_choice / true_false / fill_blank / short_answer</td></tr>
+        <tr><td>count</td><td><span class="field-type">number</span></td><td class="field-desc">累计错误次数，同一张卡/题目重复答错时累加</td></tr>
+        <tr><td>lastWrongAt</td><td><span class="field-type">timestamp</span></td><td class="field-desc">最后一次错误的时间戳，用于排序展示</td></tr>
+        <tr><td>stem</td><td><span class="field-type">string</span></td><td class="field-desc">题目的题干文本，便于在错题本直接预览</td></tr>
+        <tr><td>categoryName</td><td><span class="field-type">string</span></td><td class="field-desc">分类名冗余字段，避免关联查询</td></tr>
+        <tr><td>unitName</td><td><span class="field-type">string</span></td><td class="field-desc">单元名冗余字段</td></tr>
+        <tr><td>updatedAt</td><td><span class="field-type">timestamp</span></td><td class="field-desc">记录更新时间戳</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin: 32px 0 12px; color: var(--primary-dark);">🔍 复合索引设计</h3>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>索引</th>
+          <th>用途</th>
+          <th>相关查询</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>[categoryId + unitId]</td><td><span class="field-type">复合索引</span></td><td class="field-desc">getWrongAnswersByCategoryAndUnit() 按分类+单元快速筛选</td></tr>
+        <tr><td>[categoryId + chapterId]</td><td><span class="field-type">复合索引</span></td><td class="field-desc">getWrongAnswersByChapter() 按章节维度查询</td></tr>
+        <tr><td>lastWrongAt</td><td><span class="field-type">排序索引</span></td><td class="field-desc">getAllWrongAnswers() 按最后错误时间倒序</td></tr>
+        <tr><td>cardId + categoryId</td><td><span class="field-type">复合去重</span></td><td class="field-desc">addWrongAnswer() 时判断是否已有记录，有则 count+1</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 5. 核心功能模块 -->
+  <div class="section" id="features">
+    <h2 class="section-title"><span class="section-num">5</span>核心功能模块 (db.js)</h2>
+    <p class="section-desc">以下是 src/services/db.js 中负责错题本功能的 12 个核心数据库操作函数。</p>
+
+    <div class="feature-grid">
+
+      <div class="feature-card">
+        <div class="feature-icon">➕</div>
+        <div class="feature-title">addWrongAnswer()</div>
+        <div class="feature-desc">新增或更新错题记录。智能去重：同 cardId+categoryId+unitId 组合已存在时，自动 count+1 并更新 lastWrongAt。</div>
+        <div class="feature-methods"><code>addWrongAnswer(cardId, categoryId, questionType, {unitId, chapterId, stem, questionId})</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📥</div>
+        <div class="feature-title">getAllWrongAnswers()</div>
+        <div class="feature-desc">获取全部错题记录，按 lastWrongAt 倒序排列。为 WrongQuestionsPage 的主数据源。</div>
+        <div class="feature-methods"><code>db.wrongAnswers.orderBy('lastWrongAt').reverse()</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🏷️</div>
+        <div class="feature-title">getWrongAnswersByCategory()</div>
+        <div class="feature-desc">按分类 ID 筛选错题，支持 limit 参数限制返回数量（默认 20 条）。</div>
+        <div class="feature-methods"><code>.where('categoryId').equals(id)</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📚</div>
+        <div class="feature-title">getWrongAnswersByUnit()</div>
+        <div class="feature-desc">按单元 ID 筛选错题，v5 升级后支持以单元维度进行专项训练。</div>
+        <div class="feature-methods"><code>.where('unitId').equals(id)</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📖</div>
+        <div class="feature-title">getWrongAnswersByChapter()</div>
+        <div class="feature-desc">按章节 ID 筛选错题，v7 章节化支持新增的章节维度。</div>
+        <div class="feature-methods"><code>.where('chapterId').equals(id)</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔗</div>
+        <div class="feature-title">getWrongAnswersByCategoryAndUnit()</div>
+        <div class="feature-desc">按分类+单元组合筛选，使用 [categoryId+unitId] 复合索引保证查询性能。</div>
+        <div class="feature-methods"><code>.where(['categoryId','unitId']).equals([cat, unit])</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔎</div>
+        <div class="feature-title">getWrongAnswer()</div>
+        <div class="feature-desc">查询单张卡片在指定分类下的错题记录，用于细粒度控制。</div>
+        <div class="feature-methods"><code>.where({cardId, categoryId}).first()</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🗑️</div>
+        <div class="feature-title">clearWrongAnswer()</div>
+        <div class="feature-desc">答对后清除该卡片在指定分类/单元下的错题记录，支持按单元精细化清除。</div>
+        <div class="feature-methods"><code>clearWrongAnswer(cardId, categoryId, unitId)</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">❌</div>
+        <div class="feature-title">deleteWrongAnswer()</div>
+        <div class="feature-desc">删除单条错题记录，用户在 UI 上点击单条删除按钮时调用。</div>
+        <div class="feature-methods"><code>db.wrongAnswers.delete(id)</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🧹</div>
+        <div class="feature-title">clearAllWrongAnswers()</div>
+        <div class="feature-desc">清空全部错题记录。用于用户重置学习数据或一键清空。</div>
+        <div class="feature-methods"><code>db.wrongAnswers.clear()</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📤</div>
+        <div class="feature-title">uploadTable('wrong_answers')</div>
+        <div class="feature-desc">sync.js 中调用云端同步，将本地 wrongAnswers 数据上传至云端，支持多设备间同步。</div>
+        <div class="feature-methods"><code>upsert by id</code></div>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔄</div>
+        <div class="feature-title">级联删除/迁移</div>
+        <div class="feature-desc">删除分类时级联删除对应错题；卡片移动分类时同步更新错题表的 categoryId 字段。</div>
+        <div class="feature-methods"><code>deleteCategory / moveCards</code></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 6. 数据流与调用链 -->
+  <div class="section" id="dataflow">
+    <h2 class="section-title"><span class="section-num">6</span>数据流与调用链</h2>
+    <p class="section-desc">从用户答题到错题写入再到 UI 展示，每一步涉及的模块间调用关系。</p>
+
+    <div class="dataflow">
+      <div class="dataflow-node">
+        <div class="dataflow-icon">👤</div>
+        <div class="dataflow-label">用户答题</div>
+        <div class="dataflow-sublabel">UnitTestPage</div>
+      </div>
+      <div class="dataflow-arrow">→</div>
+      <div class="dataflow-node">
+        <div class="dataflow-icon">📝</div>
+        <div class="dataflow-label">提交答案</div>
+        <div class="dataflow-sublabel">handleSubmitAll()</div>
+      </div>
+      <div class="dataflow-arrow">→</div>
+      <div class="dataflow-node">
+        <div class="dataflow-icon">🧮</div>
+        <div class="dataflow-label">AI 评分引擎</div>
+        <div class="dataflow-sublabel">testGradingService.gradeTest()</div>
+      </div>
+      <div class="dataflow-arrow">→</div>
+      <div class="dataflow-node">
+        <div class="dataflow-icon">✅</div>
+        <div class="dataflow-label">判定对错</div>
+        <div class="dataflow-sublabel">updateMasteryAndWrongAnswers()</div>
+      </div>
+      <div class="dataflow-arrow">→</div>
+      <div class="dataflow-node">
+        <div class="dataflow-icon">💾</div>
+        <div class="dataflow-label">写入 DB</div>
+        <div class="dataflow-sublabel">db.addWrongAnswer()</div>
+      </div>
+      <div class="dataflow-arrow">→</div>
+      <div class="dataflow-node">
+        <div class="dataflow-icon">📱</div>
+        <div class="dataflow-label">UI 展示</div>
+        <div class="dataflow-sublabel">WrongQuestionsPage</div>
+      </div>
+    </div>
+
+    <h3 style="margin: 32px 0 12px; color: var(--primary-dark);">🔗 关键调用链代码</h3>
+    <div class="code-block">
+<span class="comment">// 1. testGradingService.js - 评分完成后更新</span>
+<span class="keyword">async function</span> <span class="func">updateMasteryAndWrongAnswers</span>(gradingResults, questions, categoryId, accuracy, userId, meta) {
+  <span class="keyword">for</span> (const r of gradingResults) {
+    <span class="keyword">if</span> (r.isCorrect) {
+      <span class="keyword">await</span> setCardStatus(cardId, categoryId, <span class="string">'mastered'</span>);
+      <span class="keyword">await</span> clearWrongAnswer(cardId, categoryId);  <span class="comment">// 答对清除错题</span>
+    } <span class="keyword">else</span> {
+      <span class="keyword">await</span> setCardStatus(cardId, categoryId, <span class="string">'review'</span>);
+      <span class="keyword">await</span> addWrongAnswer(cardId, categoryId, r.type, {  <span class="comment">// 答错写入错题</span>
+        unitId, chapterId, categoryName, unitName, stem
+      });
+    }
+  }
+}
+
+<span class="comment" style="margin-top:16px;display:block;">// 2. WrongQuestionsPage.jsx - 加载并构建三层树</span>
+<span class="keyword">const</span> loadData = <span class="keyword">async</span> () => {
+  <span class="keyword">const</span> [wrongs, cats] = <span class="keyword">await</span> Promise.all([
+    getAllWrongAnswers(), getCategories()
+  ]);
+  <span class="keyword">const</span> unitsByCategory = ...;  <span class="comment">// 并行加载单元</span>
+  <span class="keyword">const</span> chaptersByCategory = ...;  <span class="comment">// 并行加载章节</span>
+};
+
+<span class="keyword">const</span> buildTree = () => {
+  <span class="keyword">return</span> wrongs → group by categoryId → chapterId → unitId
+    → 按错题总数降序排序
+    → 返回 [{name, total, chapters: [{name, units: [...]}]}]
+};
+
+<span class="comment" style="margin-top:16px;display:block;">// 3. UnitTestPage.jsx - 错题重做模式</span>
+<span class="keyword">if</span> (mode === <span class="string">'wrong'</span>) {
+  wrongList = <span class="keyword">await</span> getWrongAnswersByCategoryAndUnit(categoryId, unitId);
+  <span class="keyword">const</span> cardIds = wrongList.map(w => w.cardId);
+  questions = <span class="keyword">await</span> getTestQuestionsByCardIds(cardIds);  <span class="comment">// 从题库拉取实际题目</span>
+}
+    </div>
+  </div>
+
+  <!-- 7. 技术亮点 -->
+  <div class="section" id="highlights">
+    <h2 class="section-title"><span class="section-num">7</span>技术亮点与设计优势</h2>
+    <p class="section-desc">错题本功能在架构设计和实现细节上的多个优秀实践。</p>
+
+    <div class="highlight-list">
+
+      <div class="highlight-item">
+        <div class="highlight-title">三层复合索引优化</div>
+        <div class="highlight-desc">设计 [categoryId+unitId] 和 [categoryId+chapterId] 复合索引，避免全表扫描，支持分类/章节/单元三维度快速查询，随着数据量增长依然保持性能。</div>
+      </div>
+
+      <div class="highlight-item">
+        <div class="highlight-title">智能去重与累加计数</div>
+        <div class="highlight-desc">addWrongAnswer() 写入时先按 (cardId, categoryId, unitId) 查询，已存在则 count+1 更新 lastWrongAt，不存在才新增记录。避免同一题重复产生多条记录。</div>
+      </div>
+
+      <div class="highlight-item">
+        <div class="highlight-title">冗余字段设计</div>
+        <div class="highlight-desc">存储 categoryName / unitName / stem 等冗余字段，展示时无需二次 JOIN 查询，前端加载速度更快（典型的"读优化"设计）。</div>
+      </div>
+
+      <div class="highlight-item">
+        <div class="highlight-title">AI / 本地双通道评分</div>
+        <div class="highlight-desc">testGradingService.js 支持强模型(DeepSeek/火山引擎/百炼)和弱模型(讯飞 Lite)双通道，主观题答题失败时自动降级为本地关键词匹配 + 编辑距离评分，保证可用性。</div>
+      </div>
+
+      <div class="highlight-item">
+        <div class="highlight-title">掌握程度双向联动</div>
+        <div class="highlight-desc">写入错题的同时联动调用 setCardStatus() 更新卡片掌握状态（mastered/review），实现"错题本"与"背诵复习"两大模块的数据打通。</div>
+      </div>
+
+      <div class="highlight-item">
+        <div class="highlight-title">weak 模式薄弱卡片复习</div>
+        <div class="highlight-desc">Memorize.jsx 的 weak 模式直接基于 wrongAnswers 表筛选薄弱卡片，形成"检测→错题→背诵"的完整闭环学习路径。</div>
+      </div>
+
+      <div class="highlight-item">
+        <div class="highlight-title">移动端自适应 UI</div>
+        <div class="highlight-desc">WrongQuestionsPage 采用 flex 布局 + 三层可折叠卡片，头部统计卡片居中展示，符合手机端单手操作习惯，按钮最小高度 44px 确保可点中。</div>
+      </div>
+
+      <div class="highlight-item">
+        <div class="highlight-title">云端数据一致性</div>
+        <div class="highlight-desc">sync.js 的 uploadTable/downloadTable 机制支持本地 IndexedDB 与云端 PostgreSQL wrong_answers 表双向同步，保证多设备错题记录一致。</div>
+      </div>
+
+      <div class="highlight-item">
+        <div class="highlight-title">章节化演进支持</div>
+        <div class="highlight-desc">从 v1 单表 → v5 增加 unitId → v7 增加 chapterId，通过数据库版本迁移机制逐步增强，保持向后兼容，体现了良好的迭代演进能力。</div>
+      </div>
+
+      <div class="highlight-item">
+        <div class="highlight-title">级联清理与数据完整性</div>
+        <div class="highlight-desc">删除分类/单元时自动清理关联的错题记录；卡片移动分类时同步更新错题表的归属字段，确保数据引用始终有效。</div>
+      </div>
+
+    </div>
+
+    <div class="notice-box" style="margin-top: 32px;">
+      <div class="title">🎯 总结</div>
+      <div class="content">
+        错题本功能以 <b>WrongQuestionsPage.jsx</b> 为展示核心，以 <b>db.js 的 12+ 个操作函数</b> 为数据基础，以 <b>testGradingService.js 的 AI 双通道评分</b> 为写入源头，
+        以 <b>UnitTestPage (mode=wrong)</b> 为重做闭环，最终通过 <b>sync.js 云端同步</b> 实现跨设备一致。
+        整体形成"检测 → 评分 → 写入错题 → 展示 → 重做 → 清除"的完整学习反馈闭环，为用户提供高效的薄弱知识强化途径。
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    📊 AI 学习辅助应用 · 错题本功能分析报告<br/>
+    <span style="font-size: 0.85rem; opacity: 0.7;">基于 src/pages/WrongQuestionsPage.jsx · src/services/db.js · src/services/testGradingService.js 分析</span>
+  </div>
+
+</div>
+
+<script>
+  // 报告日期
+  const now = new Date();
+  document.getElementById('report-date').textContent =
+    `报告生成时间：${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+  // 平滑滚动
+  document.querySelectorAll('.toc-item').forEach(link => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      const target = document.querySelector(link.getAttribute('href'));
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+  });
+</script>
+</body>
+</html>

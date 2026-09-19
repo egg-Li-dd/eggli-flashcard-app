@@ -1,0 +1,504 @@
+=== 单元检测与分类检测评分改卷报告 ===
+
+更新日期：2026-06-16（第二次更新：启用增强评分体系）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+一、概述
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+本报告详细分析 APP 中"单元检测"和"分类检测"两种测试模式的
+评分（改卷）机制，包括答题流程、评分算法、结果展示、数据存储
+等完整链路。
+
+系统现有两套评分体系，均已启用：
+  · 体系A（本地简易模式）：无 AI 配置时使用，全本地精确匹配评分
+  · 体系B（增强评分模式）：有 AI 配置时使用，含 AI 评卷、难度加权、
+    薄弱点分析、题型统计、掌握程度联动
+
+模式切换逻辑（handleSubmitAll 中判断）：
+  · 检测当前 AI 服务是否已配置 API Key
+  · 未配置 → 本地简易模式（checkAnswer 函数）
+  · 已配置 → 增强评分模式（gradeTest 函数）
+
+强/弱模型调用路径已分离：
+  · 强模型（DeepSeek/火山引擎/阿里云百炼）：callAiForGradingStrong
+  · 弱模型（讯飞 Spark Lite）：callAiForGradingWeak（简化 prompt、分批处理）
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+二、完整答题流程
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+2.1 流程总览
+
+检测入口（UnitTestMain.jsx）
+  ┌─ 单元检测按钮 → handleUnitTest()
+  └─ 分类检测按钮 → handleCategoryTest()
+        ↓
+  先调用 updateQuestionBank() 更新题库（AI 出题）
+        ↓
+  navigate('/test/unit?mode=unit&unitId=xxx')
+  navigate('/test/unit?mode=category&categoryId=xxx')
+        ↓
+  UnitTestPage.jsx 加载题目
+        ↓
+  用户逐题作答（支持上一题/下一题/提交/标记）
+        ↓
+  点击"结束答题" → handleSubmitAll()
+        ↓
+  ┌─ 无 AI 配置 → checkAnswer() 本地评分 → 保存记录 → 展示结果
+  └─ 有 AI 配置 → gradeTest() 增强评分 → 展示结果（含加权分/薄弱点/题型统计）
+
+2.2 题目加载逻辑（UnitTestPage.jsx L72-175）
+
+根据 mode 参数加载题目：
+  mode=unit     → getTestQuestionsByUnit(unitId)
+  mode=category → getTestQuestionsByCategory(categoryId)
+  mode=review   → 优先 unitId，其次 categoryId
+  mode=wrong    → 从 wrongAnswers 表获取错题 cardIds，再查题
+
+题目标准化（L154-164）：
+  { id, cardId, type, stem, options, answer, analysis, 
+    difficulty, knowledgePoint }
+
+2.3 即时反馈机制
+
+用户可在答题过程中开启"即时反馈"开关（顶部栏 ⓘ 按钮）：
+  · 开启后：每次选择答案立即显示对错和解析
+  · 关闭后：需点击"提交"按钮才能看到对错
+  · 即时反馈通过 feedbackMap 状态管理，不写入持久化存储
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+三、评分算法（checkAnswer 函数）— 实际运行
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+文件：UnitTestPage.jsx L408-451
+
+3.1 单选题评分（single_choice）
+
+评分逻辑：
+  1. 获取用户选择的 selectedIndex（0-based）
+  2. 从 question.options 中取出对应选项的 label（如 "A"、"B"）
+  3. 与 question.answer 做精确匹配
+  4. 备选：selectedText 也做匹配
+
+判定：label === answer  → 正确，否则 → 错误
+
+3.2 多选题评分（multi_choice）
+
+评分逻辑：
+  1. 获取用户选择的 selectedIndices 数组
+  2. 将每个 index 映射为 option.label（转大写）
+  3. 过滤出合法的 A-Z 字母，排序后拼成字符串（如 "ABD"）
+  4. 将 question.answer 同样归一化为纯字母+排序格式
+  5. 与用户答案做精确匹配
+
+判定：答案完全一致 → 正确，否则 → 错误
+注意：多选题必须全对才得分，无部分给分
+
+3.3 填空题评分（fill_blank）
+
+评分逻辑：
+  1. 获取用户输入的 answerText（trim 后）
+  2. 与 question.answer 做不区分大小写的精确匹配
+
+判定：answerText.toLowerCase() === answer.toLowerCase() → 正确
+注意：是精确匹配，不支持近义词或编辑距离容忍
+
+3.4 判断题评分（true_false / judge）
+
+评分逻辑：
+  1. 获取用户答案（可能是 boolean 或 string）
+  2. 转换为布尔值（true/正确/对 → true）
+  3. 将正确答案也转换为布尔值
+  4. 比较两个布尔值
+
+判定：userBool === correctBool → 正确
+支持的答案格式：true/false、正确/错误、对/错
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+四、分数计算与结果生成
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+文件：UnitTestPage.jsx L484-508（handleSubmitAll）
+
+4.1 分数计算公式
+
+  正确题数 = gradingResults 中 isCorrect === true 的数量
+  总题数   = 题目总数
+  得分     = Math.round((正确题数 / 总题数) × 100)
+  
+  结果以百分比形式展示，如：
+    答对 8/10 题 → 80分
+
+4.2 结果数据结构
+
+{
+  mode,              // 'unit' | 'category' | 'review' | 'wrong'
+  unitId,            // 单元ID
+  categoryId,        // 分类ID
+  totalQuestions,    // 总题数
+  totalCorrect,      // 正确题数
+  score,             // 得分（0-100）
+  elapsed,           // 用时（秒）
+  graded,            // 逐题评分结果数组
+  finishedAt,        // 完成时间（ISO 8601）
+}
+
+graded 中每项的结构：
+{
+  questionId,        // 题目ID
+  cardId,            // 关联卡片ID
+  stem,              // 题干
+  type,              // 题型
+  userAnswer,        // 用户答案（null 表示未作答）
+  correctAnswer,     // 正确答案
+  isCorrect,         // 是否答对
+  analysis,          // 解析
+  knowledgePoint,    // 知识点
+  difficulty,        // 难度
+}
+
+4.3 未作答处理
+
+如果用户没有回答某道题就提交：
+  · userAnswer = null
+  · isCorrect = false
+  · 该题计入总数，视为错误
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+五、结果展示
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5.1 结果页（UnitTestPage.jsx 内嵌结果视图 L687-788）
+
+页面结构：
+  ┌───────────────────────────────────┐
+  │ ← 返回        答题结果             │
+  ├───────────────────────────────────┤
+  │                                   │
+  │          ┌──────────┐             │
+  │          │  80分     │  ← 颜色：   │
+  │          │  (大号)   │  ≥60绿色   │
+  │          └──────────┘  <60红色    │
+  │                                   │
+  │  答对 8/10 题 · 用时 05:30        │
+  │                                   │
+  │  ┌ 错题回顾 (2) ───────────────┐  │
+  │  │ [错误] 题干1...              │  │
+  │  │ 解析：XXX                    │  │
+  │  │                              │  │
+  │  │ [错误] 题干2...              │  │
+  │  │ 解析：XXX                    │  │
+  │  └──────────────────────────────┘  │
+  │                                   │
+  ├───────────────────────────────────┤
+  │  [返回]              [再测一次]    │
+  └───────────────────────────────────┘
+
+5.2 增强版结果页（UnitTestResult.jsx L44-286）
+
+此页面为独立路由，接收 location.state.resultData 传入结果数据。
+包含以下增强功能（但当前实际未通过 gradeTest 生成数据传递）：
+
+  · 得分环（SVG 环形图）：正确率可视化
+  · 加权得分显示：难度加权后的分数
+  · 各题型正确率：按题型分组展示正确率柱状图
+  · 薄弱知识点 TOP5：按错误次数排序的知识点
+  · 答题详情：可展开查看每题的对错、你的答案、正确答案、解析
+  · 手动判分：标记为正确/标记为错误（支持覆盖自动评分）
+  · 关键词匹配：简答题的关键词匹配展示
+
+注意：UnitTestResult.jsx 目前导入 testGradingService 的 manualOverrideGrading、
+recalculateScore 等函数，但这些功能依赖 resultData 中包含 gradingResults 的
+score/partial 等字段，而 UnitTestPage.jsx 的 handleSubmitAll 并未生成这些字段。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+六、数据存储
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+6.1 答题记录（testRecords 表）
+
+保存时机：提交所有答案后（handleSubmitAll L550-578）
+
+存储内容：
+  · userId          — 用户ID
+  · categoryId      — 分类ID
+  · unitId          — 单元ID
+  · categoryName    — 分类名（冗余存储）
+  · unitName        — 单元名（冗余存储）
+  · totalScore      — 得分（0-100）
+  · correctCount    — 正确题数
+  · totalCount      — 总题数
+  · timeUsed        — 用时（秒）
+  · type            — 类型：'unit_test' | 'category_test' | 'review' | 'wrong'
+  · questions       — 完整题目数据（含选项、解析、知识点等）
+  · answers         — 用户答案字典
+  · gradingResults  — 评分结果数组
+
+6.2 错题记录（wrongAnswers 表）
+
+保存时机：提交后，将 isCorrect=false 的题目写入（L526-543）
+
+写入逻辑：
+  · 遍历所有评分结果，筛选 isCorrect === false 的题
+  · 调用 addWrongAnswer(cardId, categoryId, questionType, {
+      unitId, categoryName, unitName, stem
+    })
+  · 去重：同一 (cardId, categoryId, unitId) 只保留一条，count 递增
+  · 详见：错题本功能分析报告.txt 第四章
+
+6.3 断点续考（testSessions 表）
+
+保存时机：每 30 秒自动保存一次（AUTO_SAVE_INTERVAL）
+
+存储内容：
+  · questions      — 完整题目列表
+  · answers        — 已作答的答案字典
+  · currentIndex   — 当前题目索引
+  · elapsed        — 已用时间
+  · markedQuestions — 标记的题目
+  · 以及其他会话状态
+
+清除时机：提交完成后自动删除会话
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+七、与错题本的联动
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+7.1 答题后联动
+
+  提交答案 → 答错的题 → addWrongAnswer()
+  → 写入 wrongAnswers 表 → 错题本页面可查看
+
+7.2 错题重做联动
+
+  错题本 → 点击"错题重做" → mode=wrong
+  → 获取 wrongAnswers 中的 cardIds
+  → getTestQuestionsByCardIds() 获取题目
+  → 重新答题 → 答对 → 清除错题记录
+
+7.3 与背诵功能的联动
+
+  背诵页标记"需复习" → addWrongAnswer()
+  → 也被收录到错题本中（questionType 为空字符串）
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+八、计时机制
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+8.1 计时器
+
+  · 每秒更新一次 elapsed 状态
+  · 支持暂停/恢复（点击顶部计时器）
+  · 暂停时暂停累加，恢复时补偿暂停时间
+  · 格式：MM:SS（如 05:30）
+
+8.2 计时器暂停
+
+  在 finished 或 timerPaused 时停止计时
+  · 答题完成 → 自动停止
+  · 用户手动暂停 → 停止计时，保留暂停时间戳
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+九、增强评分体系（testGradingService.js）— 已启用
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+文件：testGradingService.js
+
+状态：✅ 已启用（2026-06-16）
+触发条件：AI 服务已配置 API Key（DeepSeek/火山/百炼/讯飞任一种）
+
+9.1 概述
+
+gradeTest() 函数是完整的增强评分流程，包含 AI 评分、难度加权、
+薄弱点分析、题型统计、掌握程度联动等功能。
+由 UnitTestPage.jsx 的 handleSubmitAll() 在有 AI 配置时调用。
+
+9.2 增强评分流程（9步）
+
+  第1步：本地客观题评分
+    · 单选题：同 checkAnswer，选出 option.label 匹配
+    · 多选题：支持部分给分
+      公式：max(0, 正确选中数 - 多选惩罚×0.5) / 正确选项总数
+      得分范围 0~1，score >= 1.0 才算正确
+    · 判断题：同 checkAnswer
+
+  第2步：填空题/简答题 → AI 评分（可选）
+    · 填空题：调用 AI 判断语义是否正确（降级为编辑距离≥0.8）
+    · 简答题：调用 AI 判断语义相似度（降级为关键词匹配）
+    · AI 不可用时自动降级为本地评分
+
+  第3步：AI 答案解析生成（异步）
+    · 为缺少解析的题目调用 AI 生成简短解析
+
+  第4步：计算加权分数
+    · 难度权重：easy×1.0, medium×1.5, hard×2.0
+    · 加权得分 = Σ(每题得分 × 难度权重)
+    · 最大可能得分 = Σ(难度权重)
+
+  第5步：计算简单统计
+    · 正确率 = 答对数 / 总数 × 100%
+    · 总得分 = 正确的题数
+
+  第6步：薄弱知识点分析
+    · 统计每道错题的知识点
+    · 按错误频率排序，取 TOP5
+
+  第7步：题型统计
+    · 按题型分组（单选/多选/判断/填空/简答）
+    · 计算各题型的正确率
+
+  第7.5步：AI 整体评价（仅强模型，异步）
+    · 将所有题目、用户答案、正确率发送给 AI
+    · AI 生成综合评价：整体评价、优点列表、不足列表、学习建议、重点复习项
+    · 仅 DeepSeek/火山引擎/阿里云百炼 适用（讯飞 Spark Lite 不适用）
+    · 超时 20000ms，失败时 holisticEvaluation = null，不影响主流程
+
+  第8步：保存测试记录
+    · 写入 testRecords 表
+
+  第9步：更新掌握程度与错题
+    · 逐题：答对→setCardStatus('mastered') + clearWrongAnswer
+           答错→setCardStatus('review') + addWrongAnswer
+    · 全局：accuracy ≥ 90% → 全部 mastered + 清空错题
+            accuracy ≥ 60% → 全部 learning
+            accuracy < 60% → 全部 review
+
+9.3 增强评分与简易评分的差异
+
+  ┌──────────────┬──────────────────┬──────────────────┬──────────────────┐
+  │ 维度          │ 简易评分（无AI）  │ 增强评分（有AI）  │ AI 整体评价（仅  │
+  │               │                  │                  │ 强模型）          │
+  ├──────────────┼──────────────────┼──────────────────┼──────────────────┤
+  │ 单选          │ label精确匹配     │ 同左              │ —                │
+  │ 多选          │ 全对才得分        │ 部分给分（惩罚）   │ —                │
+  │ 填空          │ 精确匹配          │ AI语义+编辑距离   │ —                │
+  │ 判断          │ 布尔匹配          │ 同左              │ —                │
+  │ 简答          │ 无此题型          │ AI语义+关键词      │ —                │
+  │ 难度加权       │ 无               │ easy×1/med×1.5/  │ —                │
+  │               │                  │ hard×2           │                  │
+  │ 薄弱点分析     │ 无               │ TOP5知识点        │ —                │
+  │ 题型统计       │ 无               │ 各题型正确率       │ —                │
+  │ 掌握程度联动   │ 无               │ mastered/learning/│ —                │
+  │               │                  │ review分级更新    │                  │
+  │ 错题/记录保存  │ handleSubmitAll  │ gradeTest内部处理 │ —                │
+  │               │ 直接调用          │ 含完整元数据       │                  │
+  │ 整体评价       │ 无               │ 无                │ ✓ 综合评价+建议   │
+  └──────────────┴──────────────────┴──────────────────┴──────────────────┘
+
+9.4 强/弱模型调用路径分离
+
+  强模型路径（callAiForGradingStrong）：
+    · 适用：DeepSeek、火山引擎 Doubao、阿里云百炼 Qwen
+    · 特点：统一 prompt、一次性批量评分、较大 max_tokens
+    · 超时：15000ms
+
+  弱模型路径（callAiForGradingWeak）：
+    · 适用：讯飞 Spark Lite
+    · 特点：简化 prompt、分批处理（每批≤4题）、索引映射
+    · 降级：批次解析失败时跳过该批次，不影响其他批次
+    · 超时：15000ms/批
+
+  解析生成同样分离：
+    · sendAiRequestStrong（强模型）
+    · sendAiRequestWeak（弱模型，简化 prompt + 容错）
+
+9.5 手动修正评分（manualOverrideGrading）
+
+  在 UnitTestResult.jsx 中支持：
+  · 用户点击"标记为正确"或"标记为错误"
+  · 修改 gradingResult 的 isCorrect、score、gradedBy
+  · 调用 recalculateScore() 重新计算总分和加权分
+  · 标记为 'manual' 以示区分
+
+9.6 AI 整体评价（仅强模型）
+
+  触发条件：使用 DeepSeek/火山引擎/阿里云百炼 时自动调用
+  不适用：讯飞 Spark Lite（弱模型不支持）
+
+  调用时机：第7.5步（题型统计之后，保存记录之前，异步执行）
+
+  prompt 构建内容：
+    · 基本信息：总题数、答对数、正确率、整体评价
+    · 逐题详情：题型、难度、题干、用户答案、正确答案、本题结果
+    · 用户答案处理：
+        - 单选/多选：selectedIndices → 选项 label
+        - 判断：answer 布尔值
+        - 填空/简答：answerText
+
+  AI 返回 JSON：
+  {
+    "overallComment": "整体评价（50字以内）",
+    "strengths": ["优点1", "优点2", "优点3"],
+    "weaknesses": ["不足1", "不足2", "不足3"],
+    "studySuggestions": ["建议1", "建议2", "建议3"],
+    "keyPointsToReview": ["重点复习1", "重点复习2"]
+  }
+
+  gradeTest 返回值新增：
+    holisticEvaluation: Promise（异步，失败时为 null）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+十、关键文件索引
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  页面层：
+    UnitTestMain.jsx          — 检测主页（入口，含检测/复习/更新题库按钮）
+    UnitTestPage.jsx          — 统一答题页（含评分逻辑 checkAnswer + 
+                                handleSubmitAll + 结果展示）
+    UnitTestResult.jsx        — 增强结果页（得分环/题型统计/薄弱点/手动判分）
+    AnswerRecordPage.jsx      — 答题记录页（历史记录/未完成会话管理）
+    WrongQuestionsPage.jsx    — 错题本页面（错题查看/重做入口）
+
+  服务层：
+    testGradingService.js     — 增强评分服务（gradeTest/AI评分/难度加权/
+                                掌握程度联动/手动判分 — 已实现但未调用）
+    testQuestionService.js    — 题库管理服务（updateQuestionBank/出题/
+                                校验/去重/题目矩阵分析）
+    db.js                     — 数据库层（testRecords/wrongAnswers/
+                                testSessions 表 CRUD）
+
+  组件层：
+    TestCardItem.jsx          — 答题卡片组件（渲染题目/选项/反馈）
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+十一、总结
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+11.1 当前评分机制
+
+  1. 双模式自动切换：无 AI 配置 → 简易模式，有 AI 配置 → 增强模式
+  2. 简易模式：全本地精确匹配，无需网络，即时出分
+  3. 增强模式：AI 语义评分（填空/简答）+ 难度加权 + 薄弱点分析
+     + 题型统计 + AI 整体评价
+  4. 强/弱模型路径分离：DeepSeek/火山/百炼走强模型路径，
+     讯飞 Spark Lite 走弱模型路径（简化 prompt + 分批处理）
+  5. 增强模式自动保存：错题记录、答题记录、掌握程度均由 gradeTest 内部处理
+  6. 结果页增强展示：加权分、题型统计、薄弱知识点 TOP5
+  7. AI 整体评价（仅强模型）：综合评价整份试卷，生成优缺点、学习建议
+
+11.2 变更记录
+
+  2026-06-16（初版）：编写评分改卷机制完整文档
+  2026-06-16（第二次更新）：
+    · 启用 gradeTest() 增强评分体系（有 AI 配置时调用）
+    · 拆分 callAiForGradingStrong / callAiForGradingWeak 强/弱模型路径
+    · 拆分 sendAiRequestStrong / sendAiRequestWeak 解析生成路径
+    · 修复 updateMasteryAndWrongAnswers 中 addWrongAnswer 缺少元数据
+    · 更新 UnitTestPage.jsx handleSubmitAll 双模式分支
+    · 更新结果页展示增强数据（加权分、题型统计、薄弱知识点）
+    · 弱模型分批处理（每批≤4题）+ 简化 prompt + 索引映射
+  2026-06-16（第三次更新）：
+    · 新增 AI 整体评价功能（仅强模型适用）
+    · 调用 callAiForHolisticEvaluation 对整份试卷进行综合评价
+    · AI 生成：整体评价、优点、不足、学习建议、重点复习项
+    · gradeTest 返回值新增 holisticEvaluation 字段（Promise，异步）

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 基础配置：允许明文流量（PC 引擎连接需要 HTTP 访问局域网 IP） -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- 调试模式：额外信任用户安装证书，便于本地抓包调试 -->
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+
+    <!-- 域名白名单：所有 API 域名强制 HTTPS，仅这些域名受 Android Network Policy 信任 -->
+    <!-- 注意：cleartextTrafficPermitted 保留 true 作为容错兜底，但应用代码应优先使用 HTTPS -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- 讯飞星火 API -->
+        <domain includeSubdomains="true">spark-api-open.xf-yun.com</domain>
+        <domain includeSubdomains="true">spark-api.xf-yun.com</domain>
+        <domain includeSubdomains="false">xf-yun.com</domain>
+        <domain includeSubdomains="false">xfyun.cn</domain>
+        <domain includeSubdomains="true">iat-api.xfyun.cn</domain>
+        <domain includeSubdomains="true">tts-api.xfyun.cn</domain>
+        <domain includeSubdomains="true">ost-api.xfyun.cn</domain>
+        <domain includeSubdomains="true">aicheck-api.xfyun.cn</domain>
+
+        <!-- DeepSeek API -->
+        <domain includeSubdomains="true">api.deepseek.com</domain>
+        <domain includeSubdomains="false">deepseek.com</domain>
+
+        <!-- 火山引擎 API -->
+        <domain includeSubdomains="true">ark.cn-beijing.volces.com</domain>
+        <domain includeSubdomains="false">volces.com</domain>
+        <domain includeSubdomains="true">api.volcengine.com</domain>
+
+        <!-- 阿里云百炼（千问） API -->
+        <domain includeSubdomains="true">dashscope.aliyuncs.com</domain>
+        <domain includeSubdomains="false">aliyuncs.com</domain>
+
+        <!-- Supabase -->
+        <domain includeSubdomains="true">api.supabase.co</domain>
+        <domain includeSubdomains="false">supabase.co</domain>
+
+        <!-- PaddleOCR 离线模型 CDN（百度对象存储） -->
+        <domain includeSubdomains="true">paddlejs.bj.bcebos.com</domain>
+        <domain includeSubdomains="false">bcebos.com</domain>
+
+        <!-- Vosk 模型下载源 -->
+        <domain includeSubdomains="true">alphacephei.com</domain>
+        <domain includeSubdomains="true">github.com</domain>
+        <domain includeSubdomains="true">githubusercontent.com</domain>
+        <domain includeSubdomains="true">objects.githubusercontent.com</domain>
+        <!-- GitHub 镜像源 -->
+        <domain includeSubdomains="true">kkgithub.com</domain>
+        <domain includeSubdomains="true">bgithub.xyz</domain>
+        <domain includeSubdomains="true">ghproxy.com</domain>
+
+        <!-- 蓝奏云（Vosk 模型第三备用源） -->
+        <domain includeSubdomains="true">lanzouw.com</domain>
+        <domain includeSubdomains="true">lanzou.com</domain>
+        <domain includeSubdomains="true">lanrar.com</domain>
+        <domain includeSubdomains="true">developer3.lanrar.com</domain>
+
+        <!-- 百度智能云 OCR -->
+        <domain includeSubdomains="true">aip.baidubce.com</domain>
+        <domain includeSubdomains="false">baidubce.com</domain>
+
+        <!-- 本地 Tailscale LocalAPI -->
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

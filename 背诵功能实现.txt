@@ -1,0 +1,1394 @@
+# 背诵功能实现文档（含原始知识点回填 + 卡片编辑 + AI 评分与检测系统 + 章节支持）
+
+## 一、功能概述
+
+### 1. 核心功能
+- 背诵模式：顺序背诵 / 活跃记忆 / 艾宾浩斯 / 薄弱专攻 四种模式
+- 分类页卡片操作：收藏、移动、删除、**手动编辑问题与答案**
+- 背诵页卡片操作：收藏、移动、删除、**手动编辑问题与答案**
+- 原始知识点管理：生成卡片时记录每张卡片对应的 `knowledge_point`，编辑弹窗可查看和修改
+- 统计与掌握进度
+- **AI 评分与检测系统**：单元检测 / 自动评分 / 结果报告 / 错题本 / 题库管理
+- 数据本地持久化（IndexedDB / Dexie），可选云端同步（Supabase）
+
+### 2. 数据一致性原则
+卡片内容（原始知识点 knowledge_point / 问题 front / 答案 back）以数据库为唯一真源（single source of truth）。
+- 任何编辑都先写入 DB → 再更新组件本地 state
+- 编辑完成后：
+  - Category 分类页：UnitGroup 重新 `getCardsByUnit(unit.id)`
+  - Memorize 背诵页：`setAllCards(prev => prev.map(c => id==c.id ? {...c, knowledge_point, front, back} : c))`
+- 从数据库读到的内容自动出现在所有相关页面，避免 A 页修改后 B 页仍显示旧内容
+
+### 2.1 事务、同步与撤销保障（2026-06-14 任务 5）
+
+功能需求：
+- 所有卡片归类、移动、删除、编辑等关键数据库修改都必须先完成本地事务，再同步云端。
+- 更新卡片 `categoryId/unitId` 时，学习状态、错题、题库、答题记录必须跟随更新，避免分类页、背诵页、统计页和检测页看到不一致数据。
+- 操作完成后 3 秒内允许撤销，撤销必须恢复所有相关表，而不是只恢复单张卡片。
+
+使用流程：
+1. 用户在分类页执行智能单元整理、指定分类归类、AI 全权归类，或在分类页/背诵页移动、删除、编辑卡片。
+2. 前端先调用 `createDataSnapshot()` 保存完整本地快照。
+3. 数据库函数在 Dexie 事务中更新本地表。
+4. 本地事务成功后调用 `syncToSupabase(dbInstance)`。
+5. 同步成功显示绿色提示；同步失败显示黄色提示，并加入自动重试队列。
+6. Toast 3 秒内显示“撤销”按钮；点击后 `restoreDataSnapshot(snapshot)` 回滚全部相关表，再次调用 `syncToSupabase()`。
+
+后台逻辑：
+```
+batchUpdateCardsCategoryAndUnit(entries):
+  transaction(cards, units, categories, cardStatus, wrongAnswers, testQuestions, testRecords):
+    校验目标 unit.categoryId 与目标 categoryId 匹配
+    cards.categoryId/unitId = target
+    cardStatus.categoryId = targetCategoryId
+    wrongAnswers.categoryId = targetCategoryId
+    testQuestions.categoryId/unitId = target
+    testRecords.categoryId/unitId = target
+  if cleanupEmptySource:
+    deleteEmptyUnit(sourceUnitId)
+    deleteEmptyCategory(sourceCategoryId)
+
+syncToSupabase(db):
+  pushToCloud(db)
+  if failed and retryable:
+    pendingPushRetries.push(...)
+    online/定时触发 retryPendingSyncs()
+```
+
+数据存储：
+- 本地 IndexedDB：`categories`、`units`、`cards`、`cardStatus`、`bookmarks`、`wrongAnswers`、`testQuestions`、`testRecords`、`testSessions`。
+- 云端 Supabase：沿用既有 `categories`、`units`、`cards`、`card_status`、`bookmarks`、`wrong_answers`、`test_questions`、`test_records`、`test_sessions`。
+- 本次没有新增字段和表，不需要新增 SQL。
+
+前端交互：
+- `Category.jsx` 的整理、归类、移动、删除成功后，提示文案会包含云端同步结果；同步失败为黄色提示并自动重试。
+- `Memorize.jsx` 的卡片编辑、移动、删除成功后也使用同一套同步和撤销逻辑。
+- `ToastView.jsx` 支持 `warn/warning` 黄色提示，并支持操作按钮；“撤销”按钮只保留 3 秒，符合移动端轻量提示体验。
+
+### 3. 云端下载后的卡片可见性修复（2026-06-14）
+
+功能需求：
+- 账号页显示总卡片数时，记录页分类列表和背诵页也必须能找到这些卡片。
+- 云端单表下载或异常同步导致卡片缺少有效 categoryId/unitId 时，不能让卡片永久只存在于 cards 表而不可见。
+- 不能修改云端表结构，不影响移动端已有功能。
+
+使用流程：
+1. 用户从云端数据页下载数据，或重新打开 App/进入记录页。
+2. 应用自动执行 `repairCardRelationsAfterImport()`。
+3. 可按原 unitId/categoryId 修复的卡片直接回填归属。
+4. 无法匹配原父级的卡片归入「云端下载分类」下的「云端下载卡片」单元。
+5. 用户可在记录页查看这些卡片，并可继续用移动/整理功能重新归类。
+
+后台逻辑：
+```
+repairCardRelationsAfterImport():
+  读取 categories / units / cards
+  for each card:
+    if card.unitId 命中本地 units:
+      card.categoryId = unit.categoryId
+    else if card.categoryId 命中本地 categories:
+      挂到该分类已有单元；无单元则创建「云端下载卡片」
+    else if 本地只有一个分类:
+      归入唯一分类
+    else:
+      创建/复用「云端下载分类」
+      按原 card.unitId 创建恢复单元，或创建「云端下载卡片」
+```
+
+数据存储：
+- 本地 IndexedDB：修复 `cards.categoryId`、`cards.unitId`，必要时新增 `categories` 与 `units` 本地记录。
+- Supabase：不新增字段、不新增表，本次无需 SQL。
+
+前端交互：
+- 记录页 `Home.jsx` 的分类卡片数恢复正常，孤立卡片会显示在「云端下载分类」。
+- 背诵页 `Memorize.jsx` 选择「云端下载分类」后可正常进入模式选择并加载卡片。
+- 验证：热更新预览中账号页 11 张，记录页恢复为 3 个分类共 11 张；背诵页「云端下载分类」可加载 10 张卡片。
+
+## 二、数据模型与数据库层
+
+### 表结构（src/services/db.js）
+- `categories`: id, name, createdAt
+- `units`: id, categoryId, name, createdAt, order
+- `cards`: id, unitId, categoryId, knowledge_point, front, back, createdAt, order  ← 核心卡片
+- `cardStatus`: id, cardId, categoryId, status, updatedAt, reviewCount
+- `bookmarks`: cardId, createdAt
+- `wrongAnswers`: id, cardId, categoryId, count, lastWrongAt
+- **`testRecords`** (2026-06-13 新增): id, categoryId, unitId, userId, totalScore, correctCount, totalCount, timeUsed, type, questions (JSON), answers (JSON), gradingResults (JSON), createdAt
+
+### 新增/关键 API
+| 方法 | 作用 |
+|------|------|
+| `updateCard(cardId, patch)` | 更新卡片 knowledge_point / front / back（或其它字段），返回最新的卡片 |
+| `getCardsByUnit(unitId)` | 获取单元下的所有卡片（用于列表渲染和编辑后刷新） |
+| `getAllCardsByCategory(categoryId)` | 获取分类下所有卡片（用于背诵页 initial load） |
+| `setCardStatus(cardId, categoryId, status)` | 更新"已掌握 / 待复习"状态 |
+| `addBookmark / removeBookmark / isBookmarked` | 收藏管理 |
+| `moveCardToCategory(cardId, targetCategoryId, targetUnitId)` | 移动卡片 |
+| `deleteCard(cardId, categoryId)` | 删除卡片，级联清理 status / bookmark |
+| `saveTestRecord(record)` | 保存测试记录（自动生成 id + createdAt） |
+| `getTestRecords(categoryId, unitId)` | 获取测试记录列表 |
+| `getTestRecord(id)` | 获取单条测试记录 |
+| `deleteTestRecord(id)` | 删除测试记录 |
+| `getAllWrongAnswers()` | 获取所有错题记录（跨分类） |
+| `deleteWrongAnswer(id)` | 删除单条错题记录 |
+| `clearAllWrongAnswers()` | 清空所有错题记录 |
+
+### updateCard 算法
+```
+function updateCard(cardId, patch):
+  changes = { ...patch }
+  if 'knowledge_point' in changes: changes.knowledge_point = String(changes.knowledge_point ?? '') || null
+  if 'front' in changes: changes.front = String(changes.front ?? '')
+  if 'back'  in changes: changes.back  = String(changes.back  ?? '')
+  if Object.keys(changes).length === 0: return
+  await db.cards.update(cardId, changes)      // 写入 IndexedDB
+  return db.cards.get(cardId)                  // 返回最新记录
+```
+
+## 三、分类页（Category + UnitGroup + CardItem）
+
+### 0. AI 生成卡片与原始知识点记录
+使用流程：
+1. 用户在分类页底部输入栏输入文本，或通过 OCR 得到文本。
+2. `extractKnowledgePoints(text)` 先拆分出原始知识点，打开 `KnowledgePointConfirm` 让用户确认、编辑、删除或新增。
+3. 确认弹窗顶部新增"查看原始输入文本"折叠区，用户可展开对比原始输入，判断 AI 提取是否完整。
+4. 用户点击"确认并生成卡片"后，`generateCardsFromKnowledgePoints(editedPoints)` 将每条知识点转为卡片。
+5. `attachOriginalKnowledgePoints(cardsArray, editedPoints)` 按顺序把用户确认后的知识点强制写入每张卡片的 `knowledge_point`。
+6. 后续分类、去重、`NewCardPanel` 预览、`addUnits` 入库和云端同步都沿用这个字段。
+
+规则算法：
+- `knowledge_point` 以用户在确认弹窗最终确认的文本为准。
+- 如果 AI Step 2 漏返 `knowledge_point`，使用 `editedPoints[index]` 兜底。
+- 如果 AI Step 2 改写 `knowledge_point`，仍使用 `editedPoints[index]` 覆盖，保证编辑弹窗中的原始知识点保持原文。
+- 如果没有对应的确认知识点，才保留 AI 返回值；两者都没有则写入 `null`。
+- AI 提取 prompt 已优化，禁止将编号标题与其内容分离（如"1. 软件两大类别：系统软件和应用软件"必须作为一个整体知识点）。
+
+数据存储：
+- 本地 IndexedDB：`cards.knowledge_point`
+- Supabase：`public.cards.knowledge_point text`
+- 已执行 SQL 中已有 `ALTER TABLE public.cards ADD COLUMN IF NOT EXISTS knowledge_point text;`，本次不需要新增 SQL。
+
+### 1. 操作菜单
+`CardItem` compact 模式，点击卡片右下角操作按钮会弹出一个菜单，包含：
+- 收藏卡片 / 取消收藏
+- 移动到其他分类
+- **编辑问题和答案** ← 新增
+- 删除卡片
+
+### 2. 编辑弹窗（EditDialog）
+入口：`setEditOpen(true)` → 渲染三个 textarea（原始知识点 / 问题 / 答案）
+- 点击"编辑问题和答案"后立即 closeMenu 以避免重叠
+- 内容预填为 `card.knowledge_point` / `card.front` / `card.back`
+- “根据知识点重新生成问题和答案”：读取原始知识点 textarea 当前内容，调用 AI 重新生成 front/back
+- 保存按钮：
+  1. 调用 `db.updateCard(card.id, { knowledge_point: newKp || null, front: newFront, back: newBack })`
+  2. 调用父级 `onUpdated()` 回调，触发 UnitGroup `refreshCards()`
+  3. 关闭编辑弹窗
+- 取消按钮：直接关闭弹窗
+
+### 3. 数据流
+```
+Category (holds categoryId)
+  └─ UnitGroup (per unit)
+        ├─ [useEffect] getCardsByUnit(unit.id) → setCards
+        └─ CardItem
+              ├─ 翻卡查看 / 查看答案
+              ├─ ... 其他操作
+              └─ 编辑 → updateCard → onUpdated → refreshCards()
+                                                      ↑
+                                                从 DB 重新读取，
+                                                保证与背诵页一致
+```
+
+### 4. 指定分类归类（任务 3）
+
+功能需求：
+- 用户可以在分类详情页选择多张卡片，将它们移动到指定目标分类。
+- 目标分类可以选择现有分类，也可以在弹窗中新建。
+- AI 基于目标分类已有单元和卡片样例生成单元归类方案，用户确认后再执行。
+- 移动后原分类的空单元自动删除；若原分类没有任何卡片，则自动删除原分类。
+
+使用流程：
+```
+1. 分类页 → 单元概览右侧菜单 → 指定分类归类
+2. CardSelectionModal 选择卡片 → 下一步
+3. TargetCategorySelect 选择现有分类或新建分类 → 下一步
+4. classifyCardsByCategoryContent(mode='same-category-reorganize') 基于目标分类单元生成方案
+5. UnitReorganizeConfirm 展示方案，用户可修改单元名
+6. 用户确认 → batchUpdateCardsCategoryAndUnit 批量移动
+7. 自动清理原空单元/空分类 → navigate('/category/:targetCategoryId')
+```
+
+后台逻辑：
+```
+batchUpdateCardsCategoryAndUnit(entries, { cleanupEmptySource:true }):
+  for each card:
+    cards.categoryId = targetCategoryId
+    cards.unitId = targetUnitId
+    cardStatus.categoryId = targetCategoryId
+    wrongAnswers.categoryId = targetCategoryId
+    testQuestions.categoryId = targetCategoryId
+    testQuestions.unitId = targetUnitId
+    testRecords.categoryId = targetCategoryId
+    testRecords.unitId = targetUnitId
+  deleteEmptyUnit(sourceUnitId)
+  deleteEmptyCategory(sourceCategoryId)
+```
+
+数据存储：
+- 本地 IndexedDB 更新 `cards.categoryId/unitId`，同步更新 `cardStatus`、`wrongAnswers`、`testQuestions`、`testRecords`。
+- `bookmarks` 按 `cardId` 关联，不改动，移动后收藏关系保留。
+- Supabase 不新增字段/表，本次不需要新增 SQL；后续云端同步沿用现有 cards/units/categories/test_questions 等表。
+
+前端交互：
+- `TargetCategorySelect.jsx` 使用居中弹窗，分类列表可滚动，底部“上一步 / 下一步”固定且最小高度 44px，适配手机端。
+- `UnitReorganizeConfirm.jsx` 继续承担最终确认，避免 AI 自动移动造成误操作。
+- 成功后显示 Toast，并跳转到目标分类详情页。
+
+## 四、背诵页（Memorize）
+
+### 1. 卡片展示
+- 使用 3D 翻转效果 (`card-flip-inner`, front/back)
+- 顶部徽章（问题 / 答案）+ 右上角操作（收藏 / 编辑 / 移动）
+- 正文：`currentCard.front` ↔ `currentCard.back`
+
+### 2. 编辑流程
+```
+handleOpenEditModal():
+  setEditFront(currentCard.front)
+  setEditBack(currentCard.back)
+  setShowEditModal(true)
+
+handleConfirmEdit():
+  await updateCard(currentCard.id, { front: editFront, back: editBack })
+  setAllCards(prev =>
+    prev.map(c =>
+      c.id === currentCard.id
+        ? { ...c, front: editFront, back: editBack }
+        : c
+    )
+  )
+  handleCancelEdit()
+```
+
+关键点：
+- `setAllCards` 会同步刷新整个分类卡片数组，所以"上一张 / 下一张"立即显示最新内容
+- 下次回到 Category 分类页，UnitGroup 会从 DB 重新加载（`getCardsByUnit`），同样拿到最新内容
+- **不会出现"分类页改了但背诵页没改"或相反的不一致情况**
+
+### 3. 掌握 / 复习
+- 底部两个按钮：已掌握 / 待复习
+- 调用 `setCardStatus(cardId, selectedCategoryId, 'mastered' | 'review')`
+- 艾宾浩斯算法：`utils/ebbinghaus.js` 基于 cardStatus.reviewCount + updatedAt 计算"复习到期卡片"
+
+### 4. 轮数管理与末尾卡片边界（2026-06-12 重点修复）
+
+**核心概念**：
+- 分类的"已完成轮数"由 `getCategoryRound / incrementCategoryRound / decrementCategoryRound` 管理（localStorage + Supabase 双同步）
+- 当一个分类下所有卡片都被标记为 `mastered` → 视为"本轮完成" → `handleComplete()` → 轮数 +1 → 所有已掌握卡片被重置为 `review` → 自动开启新一轮
+
+**关键状态字段**：
+- `cardStatuses`：仅记录 `'mastered' | 'review'` 的简化映射（供快速判定与渲染顶部徽章）
+- `fullCardStatuses`：完整版含 `reviewCount / easeFactor / interval / repetitions / lastReviewedAt / nextReviewAt`（艾宾浩斯筛选依赖）
+- `reviewOnly`：用户手动点击"继续复习"时只展示尚未掌握的卡片
+- `currentIndex`：当前被选中卡片在 `filteredCards` 中的位置
+
+**filteredCards 的筛选优先级**（重写后）：
+1. `reviewOnly` 或 `studyMode === 'weak'` → 筛选 `status === 'review'` 的卡片；若为空回退到 `allCards`（**防空白关键**）
+2. `studyMode === 'ebbinghaus'` → 由 `getCardsForReview` 返回到期卡片；若为空回退到 `allCards`
+3. 其他模式 → `allCards`
+
+**handleMark("已掌握") 的边界行为**：
+- 先更新 DB → 拿到 `updatedRecord`（含 SM-2 字段）
+- 再通过 `setCardStatuses / setFullCardStatuses` 同步 React state
+- setTimeout 内 **基于更新后的状态** 重新计算 `nextFilteredLen`，避免 closure 读取旧值导致 "末尾卡片点击后索引越界"
+- 判断"全部卡片都已掌握"时，使用 `updatedCardStatusesForCheck`（包含本次刚写入的 mastered 状态），而不是 `cardStatuses`
+
+**handleComplete 算法**：
+```
+handleComplete():
+  1) await incrementCategoryRound(selectedCategoryId)
+  2) masteredIds = allCards.filter(c => cardStatuses[c.id] === 'mastered')
+  3) await db.cardStatus
+        .where('categoryId').equals(selectedCategoryId)
+        .filter(r => r.status === 'mastered')
+        .modify({ status: 'review', updatedAt: Date.now() })
+  4) setCardStatuses(prev => { masteredIds.forEach(id => prev[id] = 'review'); return prev })
+  5) setFullCardStatuses(prev => { masteredIds.forEach(id => prev[id].status = 'review'); return prev })
+  6) setReviewOnly(false); setCurrentIndex(0); setFlipped(false)
+  7) setShowCongrats(true)
+```
+
+**handleContinueReview 修复**：
+- `reviewCards.length === 0` 时不再静默设置 `reviewOnly=true`（否则 filteredCards 为空 → 卡片区域空白）
+- 分两种子情况：
+  - 所有卡片都已掌握 → 直接调用 `handleComplete()` 开启新一轮
+  - 有部分卡片从未被标记（没有状态）→ 回退到顺序模式，`setReviewOnly(false)`，让用户从头开始
+
+**移动端白屏 bug 根因**（2026-06-12 修复）：
+```
+用户在最后一张卡片点击"已掌握"
+  → isAllMasteredInCategory() 用 closure 中旧 cardStatuses 判断 → 仍 false
+  → 继续走 "最后一张保留" 分支 → currentIndex = N-1
+  → 但 150ms 后 cardStatuses state 真的更新 → filteredCards 切换为 review-only 模式
+  → review-only 列表长度为 0 或变小 → currentIndex 越界 → currentCard = null → 卡片区域空白
+```
+修复：在 setTimeout 内部直接用 "更新后的状态快照" 重新计算 filtered 长度，并判断 all-mastered；`filteredCards` 对空列表回退到 `allCards`；`handleContinueReview` 不再设置空列表。
+
+### 4. 弹窗动画体系（2026-06-12 补充）
+
+**核心模式**：所有弹窗（编辑、移动、滑动菜单、模式选择、完成祝贺、手动重置确认、删除确认）都采用统一的 "opening + closing" 动画流程，避免"关闭时瞬间消失"的生硬感觉。
+
+**React 状态约定**：
+- 每个弹窗有一对状态：`showXxx:boolean` + `closingXxx:boolean`
+- 打开时：`setClosingXxx(false); setShowXxx(true)`
+- 关闭时：`if (closingXxx) return; setClosingXxx(true); setTimeout(() => { setShowXxx(false); setClosingXxx(false); }, 220~280ms)`
+- 渲染条件：`{(showXxx || closingXxx) && (...)}`
+
+**CSS 类与动画曲线**（src/index.css）：
+- `.modal-backdrop` + `.modal-backdrop.closing`：`fadeIn 0.22s` / `fadeOut 0.22s`
+- `.modal-panel` + `.modal-panel.closing`：`modalSlideUp 0.30s` / `modalSlideDown 0.28s`
+- `.modal-center` + `.modal-center.closing`：`scaleIn 0.24s` / `scaleOut 0.22s`
+- 统一缓动：`cubic-bezier(0.32, 0.72, 0, 1)`
+- `@media (prefers-reduced-motion: reduce)` 下动画时长被压缩到 60ms
+
+**底部弹窗（编辑、移动、滑动菜单、模式选择）**：
+- 使用 `.modal-backdrop`（遮罩）+ `.modal-panel`（内容面板）
+- 关闭时长：遮罩 220ms，面板 280ms
+
+**中心弹窗（完成祝贺、手动重置、删除确认）**：
+- 使用 `.modal-center`（遮罩+容器）+ 内部 `<div>`（内容面板）
+- 关闭时长：220ms
+
+**通用关闭工具函数**（src/pages/Memorize.jsx 顶部）：
+```
+function startClosing(setClosing, setShow, ms) {
+  setClosing(true)
+  setTimeout(() => {
+    setClosing(false)
+    setShow(false)
+  }, ms)
+}
+```
+
+**ConfirmDialog 组件（删除确认）**：
+- 内部使用 `closing` state，点击确认/取消按钮时：
+  1. `setClosing(true)` 触发 CSS 关闭动画
+  2. 220ms 后 `setClosing(false)` 并调用外部 `onConfirm` / `onCancel`
+- 样式类：`.dialog-overlay` / `.dialog` + `.closing` 变体
+- 关键帧：`dialogIn 0.25s` / `dialogOut 0.22s`
+
+**防抖措施**：
+- `closing` 状态为 true 时：所有交互 click handler 直接 return，不触发实际操作（防止动画期间重复点击）
+- `handleSelectMode` 先 `setClosingModal(true)` 再 setTimeout 250ms 后关闭，确保动画先播放完再执行业务逻辑（加载卡片、重洗顺序）
+
+**弹窗清单与对应状态字段**：
+```
+编辑卡片        -> showEditModal / closingEdit        -> modal-backdrop + modal-panel
+移动卡片        -> showMoveModal / closingMove        -> modal-backdrop + modal-panel
+滑动操作菜单    -> （通过 setClosingSwipe 控制）     -> modal-backdrop + modal-panel
+模式选择        -> showModeModal / closingModal       -> modal-backdrop + modal-panel
+完成本轮祝贺    -> showCongrats / closingCongrats      -> modal-center + 内部面板
+手动重置确认    -> （通过 setClosingResetConfirm）   -> modal-center + 内部面板
+删除确认        -> (ConfirmDialog 内部)               -> dialog-overlay + dialog
+```
+
+**业务逻辑保护**：
+- 所有实际操作（updateCard、moveCardToCategory、deleteCard、setCardStatus、模式切换、重置轮数）都放在关闭动画完成后的回调中执行，避免"动画未结束前状态已变"的闪烁感
+- 动画期间点击任意位置不会产生副作用（由 `if (closingXxx) return` 守卫）
+
+### 5. 卡片切换动画体系（翻转型）
+
+**目标**：在背诵页点击"已掌握 / 待复习"后、或点击"上一张 / 下一张"按钮时，用翻转 3D 动画（rotateY）完成卡片切换，代替之前生硬的横向滑动。
+
+**React 状态约定**：
+- `flipPhase`: `'out'`（当前卡片翻转淡出）| `'in'`（下一张翻转淡入）| `null`（静止）
+- `flipDir`: `'next'`（正向翻转：当前→+180°，下一张从 -180° 回到 0°）| `'prev'`（反向翻转：当前→-180°，上一张从 +180° 回到 0°）
+- `slideAnimTimerRef`: 统一存放动画 setTimeout，卸载 useEffect 时清理
+
+**容器 class 拼接逻辑**（`card-flip-container` 外层，在 JSX 中动态附加）：
+```
+flipPhase='out' && flipDir='next'  → .card-flip-out
+flipPhase='out' && flipDir='prev'  → .card-flip-out-prev
+flipPhase='in'  && flipDir='next'  → .card-flip-in
+flipPhase='in'  && flipDir='prev'  → .card-flip-in-prev
+```
+
+**关键帧 @keyframes（src/index.css）**：
+- `cardFlipOut`: opacity 1→0，transform rotateY 0→180°
+- `cardFlipIn`: opacity 0→1，transform rotateY -180°→0°
+- `cardFlipOutPrev`: opacity 1→0，transform rotateY 0→-180°
+- `cardFlipInPrev`: opacity 0→1，transform rotateY 180°→0°
+- 所有动画时长 0.45s，缓动 `cubic-bezier(0.22, 0.61, 0.36, 1)`，`forwards` 保持结束帧
+
+**handleMark 中的两阶段切换**：
+```
+点击按钮 → setFlipPhase('out'); setFlipDir('next')
+  ↓ 320ms 后
+  setFlipped(false)  // 先还原卡片内层翻转
+  计算 nextFilteredLen / allMasteredAfter（使用"更新后"的状态快照，避免 closure 旧值）
+  更新索引（末尾卡片不会越界）
+  setFlipPhase('in'); setFlipDir('next')
+  ↓ 450ms 后
+  setFlipPhase(null); setFlipDir(null)
+```
+- 如果判定为"本轮全部掌握"：先清除 flipPhase，再调用 `handleComplete()`（走中心弹窗动画），避免两张动画冲突
+
+**handleNext / handlePrev**：与 handleMark 相同的两阶段流程，只是 out→in 期间只更新 `currentIndex` 与 `flipped`，不执行业务状态写入。
+
+**与卡片内层翻转（card-flip-inner）的关系**：
+- 外层 `card-flip-container` 负责"卡片切换"翻转动画（新的 flipPhase）
+- 内层 `card-flip-inner` 负责"查看答案"的单卡片翻转（flipped 状态）
+- 两层互相独立，外层不会与内层冲突；切换卡片时先 `setFlipped(false)` 把内层归位，再走外层翻转
+
+**防抖**：
+- `handlePrev / handleNext` 顶部加 `if (flipPhase !== null) return;` 防止动画期间连点导致多层动画叠加
+
+## 五、前端交互规范（移动端优先）
+
+- 按钮最小高度：44px（主操作 48–52px）
+- 弹窗 z-index：遮罩 40，对话框 50 / 110
+- 样式令牌：`var(--color-primary)`, `var(--color-surface)`, `var(--color-border)`, `var(--radius-*)`, `var(--text-*)`
+- 输入框：圆角 10–12px，1px border，`minHeight 96–140px` 的多行 textarea
+- 保存 / 取消按钮在对话框底部成等宽两列，主按钮使用主题色
+
+## 六、涉及修改的文件
+
+| 文件 | 变化 |
+|------|------|
+| `src/services/db.js` | 新增 `updateCard(cardId, patch)` |
+| `src/components/CardItem.jsx` | 新增 editOpen 状态、编辑按钮、EditCardDialog；`handleSaveEdit` 调用 `db.updateCard` 并 `onUpdated(updated)` |
+| `src/components/UnitGroup.jsx` | 新增 `handleUpdated → refreshCards()` 并作为 `onUpdated` 传给 CardItem |
+| `src/pages/Memorize.jsx` | 导入 `updateCard`；新增 `showEditModal / editFront / editBack` 状态、`handleOpenEditModal / handleCancelEdit / handleConfirmEdit`；新增 `closingEdit / closingMove / closingSwipe / closingMode / closingCongrats / closingResetConfirm` 关闭动画状态；新增 `startClosing` 通用函数；所有弹窗由内联 style 改为 CSS 类引用（`modal-backdrop / modal-panel / modal-center`）；滑动菜单项、移动、模式选择、祝贺弹窗等全部统一双边动画；卡片切换动画从横向滑动改为翻转动画：`slidePhase/slideDir` → `flipPhase/flipDir`，`handleMark / handleNext / handlePrev` 改为两阶段 out→in 翻转流程，容器 class 动态拼 `.card-flip-out/in` 系列 |
+| `src/index.css` | 新增 `.modal-backdrop / .modal-panel / .modal-center / .modal-backdrop.closing / .modal-panel.closing / .modal-center.closing`；新增 `@keyframes scaleIn / scaleOut`；扩展 `.dialog-overlay.closing / .dialog.closing`；新增 `@keyframes dialogOut`；扩展 `prefers-reduced-motion` 媒体查询覆盖所有弹窗类；**新增卡片翻转动画**：`@keyframes cardFlipOut / cardFlipIn / cardFlipOutPrev / cardFlipInPrev` 与类 `.card-flip-out / .card-flip-in / .card-flip-out-prev / .card-flip-in-prev`；原卡片滑动 keyframes（`cardSlideOutLeft` 等）与类保留但在背诵页不再使用 |
+| `src/components/ConfirmDialog.jsx` | 新增内部 `closing` 状态；`onCancel / onConfirm` 由直接调用改为先播放 220ms 关闭动画再回调；外层遮罩与内部面板改为动态拼接 `.closing` 类名 |
+
+## 七、验收条件
+
+1. 在分类页（Category）任意卡片的"编辑问题和答案"→ 保存 → 再次进入该卡片或进入背诵页：最新内容可见。
+2. 在背诵页（Memorize）任意卡片右上角的"编辑"按钮 → 保存 → 继续背诵 / 上一张下一张 / 返回分类页：最新内容可见。
+3. 编辑弹窗中的问题和答案 textarea 支持多行，可滚动；点击遮罩或取消可关闭且不保存。
+4. 按钮可点击（44px 点击热区），适配移动端屏幕宽度。
+5. 编辑不会破坏其它字段（unitId, order, createdAt 等保持不变）。
+6. 不会出现"分类页已改但背诵页仍是旧内容"的不一致。
+
+## 八、后续可扩展
+
+- 迁移到 Supabase 时，把 `db.updateCard` 对云侧同 id 记录做 upsert，即可实现云端同步。
+- 可在编辑弹窗增加"重置"按钮。
+- 可在编辑弹窗增加 AI 辅助"润色答案"入口（复用 DeepSeek 调用）。
+
+## 九、AI 评分与检测系统（2026-06-13 新增）
+
+### 1. 功能需求
+- 单元检测：按分类/单元创建测试，做完后自动评分
+- 结果报告：展示总分、正确率、各题型正确率、薄弱知识点
+- 错题本：自动收集错题，支持错题重做
+- 题库管理：查看/编辑/添加/删除题目，支持批量操作
+
+### 2. 使用流程
+```
+1. 用户在题库管理页面查看/管理题目
+2. 启动单元检测 → 逐题作答
+3. 提交后自动评分：
+   - 客观题（单选/多选/判断）→ 本地评分，100% 准确
+   - 填空题 → 先 AI 评分，失败则降级为本地编辑距离匹配
+   - AI 生成答案解析（异步，不阻塞评分返回）
+4. 查看结果报告 → 可手动修正评分
+5. 错题自动收集到错题本 → 可错题重做
+6. 答对 → 清除错题记录；答错 → 更新错题次数
+```
+
+### 3. 评分引擎（testGradingService.js）
+
+**客观题评分规则**：
+| 题型 | 评分逻辑 | 准确率 |
+|------|---------|--------|
+| 单选题 | 选项索引匹配，或文本直接匹配 | 100% |
+| 多选题 | 选项集完全匹配（排序后比较） | 100% |
+| 判断题 | 标准化布尔比较（true/正确/对/是/√） | 100% |
+| 填空题(本地) | 编辑距离 ≤ 20% 容错 | 近似 |
+| 填空题(AI) | AI 判断语义正确性 | 高 |
+
+**AI 降级策略**：
+```
+1. 填空题先尝试 AI 评分（DeepSeek/讯飞/火山/千问）
+2. AI 调用失败 → 自动使用本地评分（编辑距离匹配）
+3. 无 AI 配置 → 直接使用本地评分
+4. 评分结果不影响功能完整性
+```
+
+**手动修正**：
+- manualOverrideGrading(result, isCorrect) — 修改单题评分
+- recalculateScore(results) — 重新计算总分
+- 手动修正后标记为 gradedBy='manual'
+
+### 4. 掌握程度同步
+```
+评分完成后自动执行：
+  - 答对 → setCardStatus(cardId, categoryId, 'mastered') + 清除错题记录
+  - 答错 → setCardStatus(cardId, categoryId, 'review') + addWrongAnswer(cardId, categoryId)
+  - 错题重复错误 → wrongCount + 1, 更新 lastWrongAt
+```
+
+### 5. 数据存储
+
+**testRecords 表**（Dexie IndexedDB）：
+```
+{
+  id: UUID,
+  categoryId: string,
+  unitId: string,
+  userId: string,
+  totalScore: number,
+  correctCount: number,
+  totalCount: number,
+  timeUsed: number,  // 秒
+  type: 'unit_test' | 'review' | 'category_test',
+  questions: JSON[],  // 题目快照
+  answers: JSON{},    // 用户答案
+  gradingResults: JSON[],  // 评分结果
+  createdAt: timestamp
+}
+```
+
+### 6. 前端页面
+
+**UnitTestResult.jsx** — 结果报告页：
+- 成绩概览：正确率百分比 + 进度条 + 用时
+- 各题型正确率：单选/多选/判断/填空独立进度条
+- 薄弱知识点 TOP5：排名标记 + 错误次数
+- 答题详情：可展开每题，显示题目/用户答案/正确答案/AI解析
+- 手动修正：每题可标记为正确/错误
+- 底部操作栏：查看错题 / 重做测试 / 返回首页
+
+**WrongQuestionsPage.jsx** — 错题本：
+- 按分类分组展示，统计概览（错题总数 + 涉及分类数）
+- 错题重做：仅重做错题，完成后自动清除做对的
+- 删除单条/清空全部（ConfirmDialog 确认）
+
+**QuestionBankPage.jsx** — 题库管理：
+- 分类选择器 → 按单元展示所有题目
+- 编辑/添加弹窗：题型选择 + 题目/答案/选项 textarea
+- 批量清空某单元或分类（ConfirmDialog 确认）
+
+### 7. 涉及文件
+| 文件 | 变化 |
+|------|------|
+| `src/services/db.js` | 新增 testRecords 表 + CRUD（saveTestRecord/getTestRecords/getTestRecord/deleteTestRecord）；新增错误记录方法（getAllWrongAnswers/deleteWrongAnswer/clearAllWrongAnswers） |
+| `src/services/testGradingService.js` | 新增：完整评分服务（本地评分引擎 + AI 评分 + 解析生成 + 掌握程度同步 + 手动修正） |
+| `src/pages/UnitTestResult.jsx` | 新增：结果报告页面 |
+| `src/pages/WrongQuestionsPage.jsx` | 新增：错题本页面 |
+| `src/pages/QuestionBankPage.jsx` | 新增：题库管理页面 |
+| `src/App.jsx` | 新增路由：/unit-test-result, /wrong-questions, /question-bank/:id, /question-bank |
+
+## 十、v3.6 单元检测数据层重构（2026-06-13）
+
+### 1. 重构动机
+旧 testRecords 表使用"整卷一条记录"（questions/answers JSON 快照 + totalScore/correctCount），无法支持：
+- 断点续考（中途退出后恢复）
+- 单题答题记录追踪
+- 按题目粒度同步到云端
+- 题库过期检测（卡片编辑后标记关联题目快照过期）
+
+### 2. 新数据模型
+
+**testQuestions 表**（每道题目一条记录）：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | text (UUID) | 主键 |
+| categoryId | text | 关联分类 |
+| unitId | text (nullable) | 关联单元（分类级为 null） |
+| cardId | text | 关联知识点卡片 |
+| type | 'single'/'multiple'/'fill'/'judge' | 题型 |
+| question | text | 题干 |
+| options | array (JSON) | 选项（单选/多选） |
+| answer | text | 正确答案 |
+| explanation | text | 答案解析 |
+| difficulty | number (1-5) | 难度，默认 3 |
+| cardUpdatedAt | number (timestamp) | 生成时卡片 updatedAt（过期校验） |
+| userId | text | 用户 ID |
+| createdAt | number | 创建时间 |
+| updatedAt | number | 更新时间 |
+
+**testRecords 表**（每道题一次作答一条记录）：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | text (UUID) | 主键 |
+| questionId | text | 关联 testQuestions.id |
+| userAnswer | text | 用户答案 |
+| isCorrect | boolean | 是否正确 |
+| testType | 'unit'/'category'/'review'/'wrong' | 测试类型 |
+| testSessionId | text | 会话 ID（同一轮测试） |
+| userId | text | 用户 ID |
+| createdAt | number | 创建时间 |
+| updatedAt | number | 更新时间 |
+
+**testSessions 表**（断点续考会话）：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | text (UUID) | 主键 |
+| testType | text | 测试类型 |
+| typeId | text | 单元/分类/错题本 ID |
+| questions | array (JSON) | 题目 ID 列表 |
+| userAnswers | array (JSON) | 已答答案 |
+| markedQuestions | array (JSON) | 标记题目 ID |
+| currentIndex | number | 当前位置 |
+| startTime | number | 开始时间 |
+| lastSavedAt | number | 最后保存 |
+| isCompleted | boolean | 是否完成 |
+| userId | text | 用户 ID |
+| createdAt | number | 创建时间 |
+| updatedAt | number | 更新时间 |
+
+### 3. 核心 API
+
+| 方法 | 作用 |
+|------|------|
+| `addTestQuestions(questions, userId)` | 批量创建题目，自动注入 id/userId/时间戳 |
+| `getTestQuestionsByUnit(unitId)` | 按单元查题目 |
+| `getTestQuestionsByCategory(categoryId)` | 按分类查题目（含 unitId=null） |
+| `updateTestQuestion(id, patch)` | 更新题目字段，自动更新 updatedAt |
+| `deleteTestQuestion(id)` | 删除单题 |
+| `deleteTestQuestionsByUnit(unitId)` | 按单元批量删除 |
+| `deleteTestQuestionsByCategory(categoryId)` | 按分类批量删除 |
+| `addTestRecord(record, userId)` | 创建答题记录（单条） |
+| `addTestRecords(records, userId)` | 批量创建答题记录 |
+| `addTestSession(session, userId)` | 创建答题会话 |
+| `updateTestSession(id, patch)` | 更新会话（断点保存） |
+| `getUncompletedTestSession(testType, typeId, userId)` | 查找未完成会话（恢复） |
+| `deleteTestSession(id)` | 删除会话 |
+| `deleteUnit(unitId)` | 删除单元（含级联删除题目/记录/会话） |
+
+### 4. 级联删除规则
+```
+deleteCategory(id):
+  → delete testQuestions WHERE categoryId = id
+  → delete testRecords WHERE questionId IN (已删题目)
+  → delete testSessions WHERE typeId = id
+
+deleteUnit(unitId):
+  → delete testQuestions WHERE unitId = unitId
+  → delete testRecords WHERE questionId IN (已删题目)
+  → delete testSessions WHERE typeId = unitId
+```
+
+### 5. 卡片更新过期钩子
+```
+updateCard(cardId, { front: '新内容' }):
+  → card.updatedAt = NOW()  // 卡片更新
+  → 不触发 testQuestions.cardUpdatedAt 同步更新
+  → 读取时比对: testQuestion.cardUpdatedAt < card.updatedAt → 题目已过期
+```
+
+### 6. 同步映射（camelCase ↔ snake_case）
+| 本地 (Dexie) | 云端 (Supabase) |
+|-------------|----------------|
+| questionId | question_id |
+| userAnswer | user_answer |
+| isCorrect | is_correct |
+| testType | test_type |
+| testSessionId | test_session_id |
+| typeId | type_id |
+| userAnswers | user_answers |
+| markedQuestions | marked_questions |
+| currentIndex | current_index |
+| startTime | start_time |
+| lastSavedAt | last_saved_at |
+| isCompleted | is_completed |
+| cardUpdatedAt | card_updated_at |
+| question | question |
+| answer | answer |
+| explanation | explanation |
+
+### 7. 涉及文件
+| 文件 | 变化 |
+|------|------|
+| `src/services/db.js` | v3 升级：新增 testQuestions/testRecords/testSessions 三表 + 14 个 CRUD 方法 + deleteUnit + 级联删除 + updateCard 过期钩子 |
+| `src/services/sync.js` | TABLE_SCHEMAS/TABLE_META 新增 3 表 + FIELD_MAP 16 个新字段 + pullFromCloud/pushToCloud 扩展 + snakeToCamel 时间戳转换 + cardUpdatedAt 转换 |
+| `src/__tests__/db.test.js` | 新增：26 个测试用例（表结构/CRUD/级联删除/钩子/回归） |
+| `src/__tests__/sync.test.js` | 新增：15 个测试用例（Schema/Meta/field mapping/转换/回归） |
+| `vitest.config.js` | 新增：vitest 配置 |
+| `需执行的 SQL（完整版）.txt` | 追加 v3.6：3 张新表 DDL + 索引 + RLS + 触发器 + diagnostic_view + reset_user_data |
+| `需执行的 SQL（更新版）.txt` | 覆盖为增量脚本：CREATE TABLE IF NOT EXISTS + 兼容旧 schema + 全量安全策略 |
+
+## 十一、通用答题页面（2026-06-13 新增）
+
+### 1. 功能需求
+- 支持4种答题模式：单元检测 / 分类检测 / 复习 / 错题重做
+- 四种题型交互：单选题、多选题、填空题、判断题
+- 题目标记：标记不确定的题目（⭐）
+- 即时反馈：提交单题后立即显示对错和答案解析（可开关）
+- 计时器：可暂停/继续，记录答题用时
+- 断点续考：自动保存 + 崩溃恢复
+
+### 2. 使用流程
+1. 从 `/test`（UnitTestMain）进入，点击"单元检测"/"分类检测"/"单元复习"/"分类复习"/"错题本"按钮
+2. 带参数导航到 `/test/unit?mode=unit&unitId=xxx` 等
+3. 页面加载题目 → 检测断点续考 → 提示是否继续
+4. 逐题作答（滑动切换/悬浮窗跳转）
+5. 答完所有题目 → 提交 → 查看结果（得分/错题回顾）
+6. 可"再测一次"或"返回"
+
+### 3. 后台逻辑与算法
+
+#### 题目加载
+```
+loadQuestions():
+  if mode == 'wrong':
+    从 localStorage.wrong_questions 读取错题
+  elif mode == 'unit':
+    调用 db.getTestQuestionsByUnit(unitId)
+  elif mode == 'category':
+    调用 db.getTestQuestionsByCategory(categoryId)
+  elif mode == 'review':
+    优先按unitId, 其次按categoryId获取题目
+    用 shuffleArray() 打乱顺序
+  normalize: 标准化题目字段 (id/type/stem/options/answer/analysis/difficulty/knowledgePoint)
+```
+
+#### 答案评判算法
+```
+checkAnswer(question, userAnswer):
+  qType = question.type
+  correctAnswer = String(question.answer).trim()
+  
+  if qType == 'single_choice':
+    return userAnswer.selectedText == correctAnswer
+         || String(userAnswer.selectedIndex) == correctAnswer
+  
+  if qType == 'multi_choice':
+    selected = (userAnswer.selectedIndices || []).sort().join(',')
+    return selected == correctAnswer
+  
+  if qType == 'fill_blank':
+    return userAnswer.answerText.trim().toLowerCase()
+          == correctAnswer.toLowerCase()
+  
+  if qType == 'true_false':
+    correctBool = correctAnswer in ['true','正确','对']
+    return String(userAnswer.answer) == String(correctBool)
+```
+
+#### 断点续考机制
+```
+每30秒自动保存:
+  saveCurrentSession() → 构建 sessionData {
+    testType, typeId, questions, userAnswers, markedQuestions,
+    currentIndex, startTime, lastSavedAt, isCompleted:false,
+    elapsed, instantFeedback, feedbackMap, answers
+  }
+  → 若已有 sessionId → updateTestSession(id, data)
+  → 若无 sessionId → addTestSession(data, userId)
+
+页面加载恢复:
+  getUncompletedTestSession(mode, typeId, userId)
+  → 有未完成会话 → 弹窗"检测到未完成的测试，是否继续？"
+  → 用户确认 → 恢复 questions/answers/currentIndex/elapsed/markedQuestions
+  → 用户拒绝 → deleteTestSession(id)，重新开始
+```
+
+#### 计时器
+```
+timerRef.current = setInterval(每秒):
+  elapsed = floor((Date.now() - startTimeRef.current) / 1000)
+
+暂停: pausedAtRef.current = Date.now(); setTimerPaused(true)
+恢复: startTimeRef.current += Date.now() - pausedAtRef.current; setTimerPaused(false)
+```
+
+#### 提交与评分
+```
+handleSubmitAll():
+  对每题调用 checkAnswer() 判定对错
+  计算 score = 正确数/总数 * 100
+  保存错题到 localStorage.wrong_questions（去重追加）
+  清除断点续考会话
+  展示结果页面（得分/正确数/用时/错题回顾）
+```
+
+### 4. 数据存储
+- **本地 IndexedDB (testSessions 表)**: 存储断点续考会话数据
+- **localStorage (wrong_questions)**: 存储错题数据（id/stem/type/answer/analysis/knowledgePoint/timestamp）
+- **localStorage (进度恢复)**: answers/markedQuestions 等运行时状态
+
+### 5. 前端交互
+
+#### TestCardItem 组件（src/components/TestCardItem.jsx）
+| 题型 | 交互方式 | 反馈方式 |
+|------|---------|---------|
+| 单选题 | 圆形选项按钮，点击选中高亮 | 正确=绿色边框，错误=红色边框 |
+| 多选题 | 方形复选框，标注"多选题（可多选）" | 同上 |
+| 填空题 | 输入框，输入文本 | 正确/错误边框变色 + 显示正确答案 |
+| 判断题 | "正确"/"错误"按钮 + 错误位置标记 | 按钮颜色变色 |
+
+#### UnitTestPage 页面（src/pages/UnitTestPage.jsx）
+| 区域 | 内容 |
+|------|------|
+| 顶部栏 | 返回 + 模式标签 + 进度(x/n) + 即时反馈开关 + 计时器(暂停/继续) + 标记按钮 |
+| 进度条 | 3px 高度，当前进度百分比 |
+| 主内容 | TestCardItem 卡片 + 上一题/提交/下一题按钮 |
+| 悬浮窗 | 右下角圆形按钮 → 可拖动面板（题目序号网格 + 结束答题按钮） |
+| 完成页 | 得分 + 正确数/总数 + 用时 + 错题回顾 + 返回/再测一次 |
+
+#### 手势交互
+- 左右滑动切换题目（threshold 60px，复用 Memorize.jsx 逻辑）
+- 悬浮窗可拖动（touch drag 手势）
+
+### 6. 涉及文件
+| 文件 | 变化 |
+|------|------|
+| `src/pages/UnitTestPage.jsx` | 新增：通用答题页面（~550行） |
+| `src/components/TestCardItem.jsx` | 新增：答题卡片组件（~540行） |
+| `src/utils/helpers.js` | 新增：shuffleArray 洗牌函数 |
+| `src/App.jsx` | 新增路由：/test/unit |
+| `src/services/db.js` | 已有复用：addTestSession/updateTestSession/getUncompletedTestSession/deleteTestSession |
+| `src/index.css` | 无修改（复用现有 CSS 类和变量） |
+
+## 十一.5、未完成测试进入答题记录页（2026-06-15 补充）
+
+### 1. 功能需求
+- 用户在单元/分类/复习/错题检测中途中退出（直接关闭页面、切换分类、闪退），下次进入不能直接丢失进度。
+- 答题记录页（/test/answer-records）需要同时展示"未完成测试"和"已完成记录"两个分组。
+- 未完成测试必须支持三个操作：继续答题（恢复进度）、重新开始（清空进度但保留题库）、删除（不保留）。
+- 三个操作都要先弹居中确认框，确认后才跳转或删除。
+- 复习模式下也能正确恢复（保留 unitId / categoryId，模式还原为 review）。
+
+### 2. 使用流程
+```
+1. 用户在 UnitTestPage 答了几道题后离开/退出/闪退 → saveCurrentSession 自动保存到 testSessions
+2. 之后再进入 /test/answer-records → 加载 getAllUnfinishedTestSessions(userId)
+3. 用户看到"未完成测试"分组，点击某条会话的【继续答题】
+4. 弹窗：您有未完成的单元检测，已答 3/10 题，最后保存于 2026-06-15 14:23。继续后将从上次中断处继续。
+5. 用户点击【继续答题】→ 跳转到 /test/unit?mode=unit&unitId=xxx&resume=continue
+6. UnitTestPage 加载时识别 resume=continue → 自动灌入 session 的 questions/answers/currentIndex/elapsed/markedQuestions/feedbackMap，跳过"有未完成会话"弹窗
+7. 用户从第 3 题继续作答
+```
+
+```
+重新开始：弹窗"将清空单元检测的答题进度并保留题库..." → 跳转 resume=restart → 清空进度 → loadQuestions 加载最新题库
+删除：弹窗"将永久删除该单元检测的进度记录..." → deleteTestSession(id) → 从列表移除
+```
+
+### 3. 后台逻辑
+
+#### 数据层（src/services/db.js）
+```
+addTestSession(session, userId):
+  写入字段 = 原有 + { unitId, categoryId, elapsed, instantFeedback, feedbackMap, answers }
+  // 单元检测/分类检测：typeId 即 unitId 或 categoryId
+  // 复习模式：冗余 unitId / categoryId 用于恢复时精确定位
+
+getAllUnfinishedTestSessions(userId):
+  db.testSessions.where('userId').equals(userId)
+    .filter(s => !s.isCompleted)
+    .reverse().sortBy('lastSavedAt')
+  // 返回该用户所有未完成会话，按最后保存时间倒序
+
+getTestSession(id):
+  db.testSessions.get(id)
+  // 单条查询，用于答题记录页展开题目预览
+
+clearTestSessionAnswers(id):
+  updateTestSession(id, {
+    userAnswers: [], currentIndex: 0, elapsed: 0,
+    feedbackMap: {}, answers: {}, startTime: Date.now()
+  })
+  // 仅清空答案/进度，questions 数组保留 → "重新开始"用
+```
+
+#### 跳转层（UnitTestPage.jsx）
+```
+URL 参数：
+  mode:        unit | category | review | wrong
+  unitId:      单元 ID（unit / review-unit 用）
+  categoryId:  分类 ID（category / review-category 用）
+  resume:      continue | restart | ''
+
+useEffect(checkSession):
+  const session = await getUncompletedTestSession(mode, typeId, userId)
+  if !session || questions.length == 0: return
+  
+  // 校验题目是否仍存在
+  existingQuestions = mode==='unit' ? getTestQuestionsByUnit(unitId)
+                   : mode==='category' ? getTestQuestionsByCategory(categoryId) : []
+  existingIds = Set(existingQuestions.map(q => q.id))
+  stillExist = session.questions.filter(q => existingIds.has(q.id))
+  if stillExist.length == 0:
+    await deleteTestSession(session.id)   // 全部被删，自动清理
+    return
+  // 部分被删 → 过滤后恢复 + 清理 answers 字典孤立 key
+  
+  if resume == 'continue':
+    sessionIdRef.current = session.id
+    setQuestions(session.questions)
+    setAnswers(session.answers)
+    setCurrentIndex(session.currentIndex)
+    setElapsed(session.elapsed)
+    startTimeRef.current = Date.now() - session.elapsed * 1000
+    setMarkedQuestions(new Set(session.markedQuestions))
+    setInstantFeedback(session.instantFeedback)
+    setFeedbackMap(session.feedbackMap)
+    return
+  if resume == 'restart':
+    await clearTestSessionAnswers(session.id)
+    sessionIdRef.current = session.id
+    return
+  // resume == ''  → 保持原有"有未完成会话时弹窗"逻辑
+  sessionIdRef.current = session.id
+  setShowResumePrompt(true)
+```
+
+#### 前端层（AnswerRecordPage.jsx）
+```
+loadAll():
+  [getAllTestRecords(), getAllUnfinishedTestSessions(userId)] 并行加载
+
+handleContinueSession(session):
+  setConfirmTarget({ kind:'session', session, action:'continue' })
+
+handleConfirmAction():
+  if action=='delete':
+    await deleteTestSession(session.id)
+    setUnfinishedSessions(prev => prev.filter(s => s.id !== session.id))
+  if action=='continue' 或 'restart':
+    params = new URLSearchParams()
+    params.set('mode', session.testType)
+    params.set('resume', action)
+    if testType=='unit': params.set('unitId', session.unitId || session.typeId)
+    elif testType=='category': params.set('categoryId', session.categoryId || session.typeId)
+    elif testType=='review':
+      if session.unitId: params.set('unitId', session.unitId)
+      elif session.categoryId: params.set('categoryId', session.categoryId)
+      elif session.typeId != 'review': params.set('unitId', session.typeId)
+    navigate(`/test/unit?${params}`)
+
+confirmDialogText (useMemo):
+  根据 action 动态生成标题/描述/按钮文案/危险样式
+```
+
+### 4. 数据存储
+- 本地 IndexedDB `testSessions`：增加 `unitId`、`categoryId`、`elapsed`、`instantFeedback`、`feedbackMap`、`answers` 字段冗余写入。
+- 已有记录（旧会话）无 unitId/categoryId 时，`getAllUnfinishedTestSessions` 仍能查到，但跳转时通过 `session.typeId` 兜底。
+- [2026-06-15 补充] Supabase `test_sessions` 同步字段：
+  · SQL v3.8：需执行的 SQL（更新版）.txt 第 3 节新增
+      ALTER TABLE public.test_sessions ADD COLUMN IF NOT EXISTS unit_id text;
+      ALTER TABLE public.test_sessions ADD COLUMN IF NOT EXISTS category_id text;
+      CREATE INDEX IF NOT EXISTS test_sessions_unit_id_idx ON public.test_sessions (unit_id);
+      CREATE INDEX IF NOT EXISTS test_sessions_category_id_idx ON public.test_sessions (category_id);
+  · sync.js 的 TABLE_SCHEMAS.test_sessions.fields 追加 'unit_id', 'category_id'，上传/下拉自动使用 FIELD_MAP_CAMEL_TO_SNAKE / snakeToCamel 的映射
+  · 多端登录时云端下拉会把 unit_id/category_id 还原成 localStorage unitId/categoryId，恢复时无需再走 typeId 兜底
+  · 旧云端记录缺少这两列时（旧 v3.7 schema），下拉后 unitId/categoryId 为空字符串，应用层用 typeId 兜底，不会报错
+
+### 5. 前端交互（src/pages/AnswerRecordPage.jsx）
+
+#### 页面结构
+- 顶部：`答题记录` + 副标题"未完成 N 条 · 已完成 N 条"
+- "未完成测试"分组（仅当有未完成会话时显示）：
+  - 标题栏：4px 橙色竖条 + "未完成测试" + 数量徽章（橙色 #fff7e6/#b45309）
+  - 每条卡片：橙色边框 1.5px (#fcd9a1) + 浅色时间图标盒 + 标题/未完成徽章 + 已答 X/Y 题 + 最后保存时间 + 4px 进度条（橙色 #f59e0b）+ 下拉箭头
+  - 展开后：用时/当前题号 + 题目预览前 5 题（已答打勾绿色）+ 三按钮网格
+  - 三按钮：重新开始（btn-secondary）/删除（btn-ghost 红字）/继续答题（btn-primary），按钮 minHeight 44px
+  - 未展开状态也显示三按钮网格，避免必须先展开
+- "已完成记录"分组（原有布局）：
+  - 标题栏：4px 主色竖条 + "已完成记录" + 数量徽章
+  - 每条卡片：主题色图标盒 + 题型名 + 时间 + 右侧大字号正确率 + X/Y 正确 + 下拉箭头
+  - 展开后：用时/得分 + 每题对错（绿/红底）+ 删除此记录按钮
+
+#### 居中确认弹窗
+- `position: fixed; inset: 0; display: flex; align-items: center; justify-content: center`
+- 容器 `margin: 16px; max-width: 360px; max-height: 80vh; overflow-y: auto`（复用 .dialog 全局类）
+- 三种文案分支：
+  - 继续答题：标题"继续答题？" + "您有未完成的XX，已答 X/Y 题，最后保存于 YY-MM-DD HH:mm..." + btn-primary
+  - 重新开始：标题"重新开始？" + "将清空XX的答题进度并保留题库，重新开始后已答 X/Y 题的记录将被清空..." + btn-primary
+  - 删除：标题"删除未完成测试？" + "将永久删除该XX的进度记录（已答 X/Y 题），此操作不可撤销..." + btn-danger
+- 取消 / 确认按钮平均分配宽度，minHeight 44px
+
+### 6. 边界场景
+- 用户在 session 期间删除了部分题目 → 进入页面时被过滤，孤立 answers key 被清理
+- 用户在 session 期间删除了全部题目 → 自动 deleteTestSession，不弹窗
+- 旧 session 没有 unitId/categoryId（早期 addTestSession 未写入） → 跳转时通过 `session.typeId` 兜底
+- 用户多设备登录 → 每个 userId 隔离（testSessions.userId 字段）
+- 多个未完成会话（如先开始单元检测，又开始分类检测） → 列表按 lastSavedAt 倒序展示
+- 错题重做模式（mode='wrong'） → 跳转到 /test/unit?mode=wrong&resume=continue，typeId='wrong'
+
+### 7. 涉及文件
+| 文件 | 变化 |
+|------|------|
+| `src/services/db.js` | 新增 getAllUnfinishedTestSessions / getTestSession / clearTestSessionAnswers；完善 addTestSession 字段冗余 |
+| `src/pages/UnitTestPage.jsx` | saveCurrentSession 写入 unitId/categoryId；URL 参数解析 resume；checkSession 处理 resume=continue/restart |
+| `src/pages/AnswerRecordPage.jsx` | 顶部新增"未完成测试"分组 + 三个操作按钮 + 居中确认弹窗 |
+| `src/components/ConfirmDialog.jsx` | 无修改（使用 inline 居中弹窗，与现有弹窗动画体系一致） |
+| `src/index.css` | 无修改（复用 .dialog / .btn / .btn-danger / .btn-secondary / .btn-ghost 全局类） |
+
+## 十二、智能归类 UI/UX 与异常处理（任务6，2026-06-14）
+
+### 1. 功能需求
+- 智能单元整理、指定分类归类、AI 全权归类在每个阶段都必须有清晰反馈。
+- 大量卡片场景下（50+ / 100+）不能一次性渲染全部卡片导致移动端卡顿。
+- AI 返回空结果、网络中断、API Key 异常、原分类只有一张卡片等边界情况不能导致页面崩溃。
+- 所有弹窗和底部操作区必须适配手机端，按钮触控高度不低于 44px。
+
+### 2. 使用流程
+```
+1. 用户在分类详情页打开单元概览右侧菜单。
+2. 点击“智能单元整理 / 指定分类归类 / AI 全权归类”。
+3. 若当前分类没有卡片，直接提示“该分类下没有卡片可整理”。
+4. 在 CardSelectionModal 中选择卡片：
+   - 50 张以内正常渲染；
+   - 超过 50 张时按单元分批显示 visibleCards，减少首屏渲染压力。
+5. 点击下一步后，系统先按 knowledge_point 去重，重复知识点自动跳过并提示。
+6. AI 阶段显示“AI 正在分析知识点...”。
+7. 用户确认方案后，数据库事务阶段显示“正在整理卡片...”。
+8. 本地事务成功后，同步阶段显示“正在同步数据到云端...”。
+9. 完成后显示详细统计，例如：
+   “已整理 12 张卡片，创建 3 个新单元，重命名 1 个单元，删除 2 个空单元，已同步云端”。
+```
+
+### 3. 后台逻辑
+```
+dedupeCardsByKnowledgePoint(cards):
+  seen = Set()
+  for card in cards:
+    key = normalize(card.knowledge_point)
+    if key is empty:
+      keep card
+    else if key already in seen:
+      duplicateCount += 1
+      skip card before AI call
+    else:
+      seen.add(key)
+      keep card
+
+buildOperationErrorMessage(error):
+  if network / Failed to fetch:
+    return "网络连接中断..." + 解决建议
+  if timeout:
+    return "AI 响应超时..." + 减少卡片数量/稍后重试
+  if API Key / 密钥:
+    return "AI 服务配置异常..." + 检查配置建议
+  if empty result:
+    return "AI 未返回有效结果..." + 补充知识点/减少卡片建议
+  else:
+    return fallback + 原始错误 + 通用建议
+```
+
+### 4. 数据存储
+- 本次没有新增表、字段或索引，不需要新增 Supabase SQL。
+- 去重只发生在 AI 调用前的运行时流程，不写入数据库。
+- 数据库整理仍复用既有批量事务：
+  - `batchUpdateCardsUnit(cardIdToUnitIdMap)`
+  - `batchUpdateCardsCategoryAndUnit(cardUpdates, { cleanupEmptySource: true })`
+  - `batchCreateCategoriesAndUnits(categoriesData)`
+  - `deleteEmptyUnits(categoryId)`
+- 云端同步仍复用 `syncToSupabase(dbInstance)`，失败时保持本地结果并提示网络恢复后重试。
+
+### 5. 前端交互
+- `Category.jsx`：
+  - AI 阶段、数据库阶段、同步阶段分别用 Toast 明确提示。
+  - 成功提示通过 `buildSmartOrganizeSuccessMessage()` 汇总移动卡片数、创建单元数、重命名单元数、删除空单元/空分类数。
+  - 错误提示通过 `buildOperationErrorMessage()` 给出原因和解决建议。
+- `CardSelectionModal.jsx`：
+  - `VIRTUAL_SCROLL_THRESHOLD = 50`，超过阈值后按单元分批渲染 `visibleCards`。
+  - footer 使用 sticky bottom + `env(safe-area-inset-bottom)`，确保移动端底部按钮可见。
+- `UnitReorganizeConfirm.jsx` / `CrossCategoryConfirm.jsx`：
+  - 弹窗使用 `maxHeight: calc(100dvh - 32px)`。
+  - 中部内容区独立滚动，底部操作区保留 safe-area。
+
+### 6. 涉及文件
+| 文件 | 变化 |
+|------|------|
+| `src/pages/Category.jsx` | 接入去重、分阶段加载提示、详细成功/错误提示、空分类提示 |
+| `src/components/CardSelectionModal.jsx` | 增加 50+ 卡片分批渲染，footer 增加 sticky + safe-area 内联兜底 |
+| `src/utils/smartOrganizeUx.js` | 新增智能归类 UX 辅助函数 |
+| `src/__tests__/smartOrganizeUx.test.js` | 新增任务6回归测试 |
+
+### 7. 验证结果
+- `npm test -- src/__tests__/smartOrganizeUx.test.js` 通过。
+- `npm test -- src/__tests__/smartOrganizeUx.test.js src/__tests__/cardSelectionModalUi.test.js src/__tests__/aiService.sameCategoryReorganize.test.js` 通过。
+- `npm run build` 通过。
+
+## 十二、跨分类 AI 全权归类（2026-06-14 新增）
+
+### 1. 功能需求
+- 用户可从分类详情页选择任意多张卡片，让 AI 不受原分类限制，重新生成“分类 → 单元 → 卡片”的完整归类方案。
+- AI 最多创建 5 个新分类，分类过多时必须合并相似分类。
+- 用户确认前可修改分类名和单元名，并可点击卡片查看原始知识点，避免误归类。
+- 确认后一次性创建新分类、新单元，迁移卡片，并清理原空单元和原空分类。
+
+### 2. 使用流程
+1. 进入分类详情页 `/category/:id`。
+2. 点击单元概览右侧菜单，选择“AI 全权归类”。
+3. 在 `CardSelectionModal` 中按单元勾选要归类的卡片，点击“下一步”。
+4. `aiService.classifyCardsByCategoryContent()` 使用 `mode: 'cross-category-auto'` 生成三级结构方案。
+5. 打开 `CrossCategoryConfirm`，用户检查分类、单元和卡片，可重命名分类/单元，点击卡片查看原始知识点。
+6. 点击“确认执行”后，数据库事务创建新分类/单元并迁移卡片。
+7. 迁移完成后自动导航到首页分类列表，并显示创建分类数、创建单元数、移动卡片数。
+
+### 3. 后台逻辑
+```
+handleCardSelectionNext('cross-category-auto'):
+  读取所有分类的 units/cards 作为 AI 参考上下文
+  按选中 cardId 找到最新卡片数据
+  调用 classifyCardsByCategoryContent(..., { mode:'cross-category-auto' })
+  返回 plan.categories[] → CrossCategoryConfirm
+
+handleConfirmCrossCategory(plan):
+  batchCreateCategoriesAndUnits(plan.categories)
+    → 得到 categoryIdMap / unitIdMap
+  遍历 plan 中每张卡片:
+    → 生成 { cardId, categoryId, unitId }
+  batchUpdateCardsCategoryAndUnit(assignments, { cleanupEmptySource:true })
+  loadCategories()
+  navigate('/')
+```
+
+### 4. 规则算法
+- AI prompt 明确要求：所有选中卡片必须且只能归入一个单元。
+- `parseCrossCategoryResult()` 会校验 AI 输出 JSON，丢弃越界、重复或无效卡片下标。
+- 若 AI 遗漏卡片，会自动补入第一个分类下的“待确认单元”。
+- 若 AI 调用失败或没有 API 配置，会使用本地降级方案生成“AI归类卡片”分类，保证用户仍可继续确认和执行。
+
+### 5. 数据存储
+- `categories`：新增 AI 规划后的分类。
+- `units`：新增每个分类下的单元，保存 `categoryId` 和 `order`。
+- `cards`：更新 `categoryId`、`unitId`、`updatedAt`。
+- `cardStatus`：同步更新 `categoryId`，保持背诵进度跟随卡片。
+- `wrongAnswers`：同步更新 `categoryId`，保持错题本分类正确。
+- `testQuestions` / `testRecords`：同步更新 `categoryId`、`unitId`，保持题库和答题记录关联一致。
+- `bookmarks`：按 `cardId` 关联，不需要修改。
+- 本次不新增云端表或字段，不需要新增 SQL。
+
+### 6. 前端交互
+| 文件 | 作用 |
+|------|------|
+| `src/pages/Category.jsx` | 接入“AI 全权归类”入口、AI 调用、确认执行和首页导航 |
+| `src/components/CrossCategoryConfirm.jsx` | 分类-单元-卡片三级确认弹窗，支持折叠、重命名和卡片翻转 |
+| `src/services/aiService.js` | `cross-category-auto` 模式 prompt、JSON 解析和 fallback |
+| `src/services/db.js` | `batchCreateCategoriesAndUnits`、`batchUpdateCardsCategoryAndUnit` 事务 |
+
+### 7. 验证
+- `npm test -- src/__tests__/db.test.js`：35 个测试通过。
+- `npm run build`：生产构建通过，仅保留既有 chunk 体积和动态导入警告。
+
+## 十三、背诵计划章节支持（2026-06-17 新增）
+
+### 1. 功能需求
+- 引入章节概念后，背诵计划需要支持按章节设置独立的学习计划。
+- 用户需要能够在章节级别设置每日复习上限、每日新学上限、优先级。
+- 未来预测和学习分析视图需要支持按章节筛选。
+- 章节级学习计划在预测视图中优先生效。
+
+### 2. 使用流程
+```
+1. 用户进入背诵计划页 → 今日计划视图，看到每个分类的卡片。
+2. 点击分类卡片右上角 ⚙️ → 打开分类级学习计划设置弹窗。
+3. 切换到未来预测/学习分析视图 → 选择章节。
+4. 章节选中后，下拉框右侧出现 ⚙️ → 点击打开章节级学习计划设置。
+5. 设置章节的每日上限、新学上限、优先级 → 保存。
+6. 章节级计划在预测视图中生效：超限警告使用章节级上限值。
+```
+
+### 3. 后台逻辑
+
+#### 数据库层（src/services/db.js v8）
+```
+upsertStudyPlan({ categoryId, chapterId, dailyReviewLimit, dailyNewLimit, priority }):
+  按 categoryId + chapterId 组合查找现有计划
+  存在 → 更新
+  不存在 → 插入
+  // chapterId 为空字符串 = 分类级计划
+
+getStudyPlanByCategory(categoryId, chapterId):
+  按 categoryId + chapterId 组合查找
+  未找到 → 返回默认值 (50/20/medium)
+```
+
+#### 前端逻辑（PlanTodayView）
+```
+studyPlans.find(p => p.categoryId === cat.id && (!p.chapterId || p.chapterId === ''))
+  // 分类级视图只使用分类级计划（chapterId 为空），避免误取章节级计划
+```
+
+#### 前端逻辑（PlanFutureView）
+```
+chapterDailyLimit = studyPlans.find(p => p.chapterId === selectedChapterId)?.dailyReviewLimit || 50
+  // 选中章节时，使用章节级计划的上限进行超限警告
+```
+
+### 4. 数据存储
+- 本地 IndexedDB `studyPlans`：新增 `chapterId` 字段（v8）。
+- 本地 IndexedDB `reviewHistory`：新增 `chapterId` 字段（v8）。
+- 云端 Supabase `study_plans`：`chapter_id` 字段（v3.9 补全，需执行 SQL）。
+- 云端 Supabase `review_history`：`chapter_id` 字段（v3.9 补全，需执行 SQL）。
+- 同步层 sync.js：TABLE_SCHEMAS.study_plans 和 TABLE_SCHEMAS.review_history 均已包含 chapter_id 字段。
+- 已有分类级计划不受影响（chapterId 为空字符串）。
+
+### 5. 前端交互
+| 文件 | 变化 |
+|------|------|
+| `src/pages/PlanSettingsModal.jsx` | 新增 chapterId/chapterName props，支持分类级和章节级计划设置 |
+| `src/pages/PlanTodayView.jsx` | 修复 studyPlan 查找逻辑（按 chapterId 过滤）；新增 ⚙️ 设置按钮；集成 PlanSettingsModal |
+| `src/pages/PlanFutureView.jsx` | 章节选择器新增 ⚙️ 设置按钮；章节视图使用章节级计划上限；集成 PlanSettingsModal |
+| `src/pages/PlanAnalysisView.jsx` | 章节选择器新增 ⚙️ 设置按钮；集成 PlanSettingsModal |
+| `src/pages/StudyPlan.jsx` | 传递 studyPlans 给 PlanFutureView |
+| `src/services/db.js` | v8 升级：studyPlans 表新增 chapterId；upsertStudyPlan/getStudyPlanByCategory/deleteStudyPlan 支持 chapterId |
+| `src/services/sync.js` | TABLE_SCHEMAS 中 study_plans 和 review_history 补全 chapter_id 字段 |
+
+### 6. 验证
+- `npm run build`：生产构建通过，无新增错误。
+- 所有修改文件诊断通过，无 lint 错误。
+
+## 十四、背诵功能全面修复（2026-06-19）
+
+### 1. 修复背景
+背诵功能长期存在以下问题：
+- 短期计划（sequential/active）标记 review 时会污染 SM-2 长期计划参数，导致艾宾浩斯复习节奏被打乱
+- ebbinghaus 模式强制覆盖 userOverride，丢失用户手动判断
+- handleComplete 调用不存在的 setIsReviewComplete 导致崩溃
+- weak 模式基于 cardStatus === 'review' 筛选，与错题本数据源不一致
+- handleMark 失败时 UI 状态已变更但未回滚
+- dueCardsCount 使用一次性 state，状态不同步
+- 艾宾浩斯/active 模式切换分类或重新进入时进度丢失
+- Pull 同步清空本地 cardStatus，导致多设备 SM-2 冲突丢失
+
+### 2. 背诵模式说明（更新）
+
+| 模式 | 数据源 | SM-2 参数处理 | userOverride 处理 |
+|------|--------|--------------|-------------------|
+| sequential | allCards | 不修改（隔离） | review/learning 时设为 true，mastered 时清除 |
+| active | allCards（shuffle） | 不修改（隔离） | 同 sequential |
+| weak | wrongAnswers 表 | mastered 时缩短 interval（保持原逻辑） | 不设置 |
+| ebbinghaus | filterDueCards | 完整 SM-2 计算（长期计划权威） | 保留原值 `ex.userOverride \|\| false` |
+| test | 测试引擎调用 | 不修改 | userOverride=true 时保护不被 mastered 覆盖 |
+
+### 3. weak 模式数据源变更
+- 旧：基于 `cardStatuses[id] === 'review'` 筛选
+- 新：基于 `wrongAnswers` 表筛选（`wrongAnswerCardIds` Set）
+- 加载流程：`loadCards` 时 `dbInstance.wrongAnswers.where('categoryId').equals(categoryId).toArray()` → `setWrongAnswerCardIds(wrongIds)`
+- filteredCards 计算：`base.filter(c => wrongAnswerCardIds.has(c.id))`
+- 无错题时返回空数组 `[]`（不再回退显示全部卡片），UI 显示空状态提示
+
+### 4. SM-2 算法隔离策略
+**核心原则**：短期计划（sequential/active）与长期计划（ebbinghaus）数据隔离，避免互相污染。
+
+**db.js setCardStatus 行为**：
+- ebbinghaus 模式：完整 SM-2 计算（repetitions/interval/easeFactor/nextReviewAt），保留原 userOverride 值
+- sequential/active 模式 review：仅更新 `status/updatedAt/reviewCount/mode/userOverride=true`，**不修改** SM-2 参数
+- sequential/active 模式 mastered：仅更新 status，清除 userOverride
+- sequential/active 模式 learning：仅更新 status，设置 userOverride=true
+- weak 模式：保持既有 interval 缩短 / easeFactor 微增逻辑
+- test 模式：只改 status/reviewCount；userOverride=true 时保护不被 mastered 覆盖
+
+**Memorize.jsx predictedRecord 同步**：
+- ebbinghaus 模式：完整预测 SM-2 参数变化
+- sequential/active 模式 review：**不再预测** SM-2 参数变化，仅设置 userOverride=true
+- sequential/active 模式 mastered/learning：仅设置 userOverride
+
+### 5. userOverride 保护机制
+- 字段位置：`cardStatus.userOverride`（boolean）
+- 设置时机：
+  - sequential/active 模式标记 review/learning → true
+  - sequential/active 模式标记 mastered → false（清除）
+  - ebbinghaus 模式 → 保留原值 `ex.userOverride || false`
+- 保护逻辑：test 模式答对时，若 `userOverride === true`，不将状态覆盖为 mastered（保护用户手动判断）
+- UI 提示：`fullCardStatuses[currentCard.id]?.userOverride` 为 true 时，卡片元信息行显示"用户已手动标记"灰色徽标
+
+### 6. 完成弹窗逻辑（handleComplete 修复）
+**旧实现问题**：调用 `setIsReviewComplete(true)`（状态不存在）导致崩溃。
+
+**新实现**：
+```
+handleComplete():
+  setFlipped(false)
+  if (fromPlan):
+    navigate('/memorize/plan')  // 从计划页来的，返回计划页
+    return
+  setShowCompleteModal(true)    // 显示完成弹窗
+```
+
+**弹窗内容（基于 studyMode 分支）**：
+- ebbinghaus 模式：
+  - 标题："今日复习已完成"
+  - 副标题："今日到期卡片已全部复习完成，共 N 张卡片"
+  - 按钮：[查看计划页]（btn-primary）+ [继续浏览]（btn-secondary）
+- 非 ebbinghaus 模式：
+  - 标题："恭喜完成"
+  - 副标题："已完成 N 张卡片的学习"
+  - 按钮：[重新开始]（btn-primary）+ [返回]（btn-secondary）
+
+**关闭动画**：`closingComplete` state，200ms 动画后清空 showCompleteModal。
+
+### 7. 进度恢复机制（lastReviewedCardId）
+**存储 key**：
+- ebbinghaus 模式：`memorize_ebbinghaus_last_card_${categoryId}`
+- active 模式：`memorize_active_last_card_${categoryId}`
+
+**写入时机**：handleMark 成功后，若 `effectiveMode === 'ebbinghaus' || effectiveMode === 'active'`，写入 `localStorage.setItem(key, currentCard.id)`
+
+**恢复时机**：
+- ebbinghaus 模式 loadCards：读取 lastReviewedCardId，在 dueCards 中定位，`setCurrentIndex(Math.min(idx + 1, dueCards.length - 1))`（定位到下一张）
+- active 模式 handleSelectMode shuffle 后：读取 lastReviewedCardId，在 shuffled 数组中定位，`setCurrentIndex(Math.min(idx + 1, shuffled.length - 1))`
+
+**未找到 lastReviewedCardId 时**：`setCurrentIndex(0)` 从头开始。
+
+### 8. dueCardsCount 动态计算
+**旧实现**：state 一次性计算，状态不同步。
+
+**新实现**（useMemo）：
+```
+const dueCardsCount = useMemo(() => {
+  if (studyMode !== 'ebbinghaus' && !reviewOnly) return 0
+  return filterDueCards(filteredCards, fullCardStatuses).length
+}, [filteredCards, fullCardStatuses, studyMode, reviewOnly])
+```
+
+**UI 使用位置**：
+- 顶部进度提示："还有 N 张稍后到期"
+- "有 N 张到期卡片"按钮（仅 ebbinghaus/非 weak/非 reviewOnly 模式显示）
+
+### 9. handleMark 状态同步与失败回滚
+**流程**：
+1. 保存操作前状态：`prevCardStatuses = { ...cardStatuses }`、`prevFullCardStatuses = { ...fullCardStatuses }`
+2. 即时更新本地 React state（predictedRecord）：UI 立即响应
+3. 异步调用 `setCardStatus(...)` 等待返回实际记录 `actualRecord`
+4. 用 `actualRecord` 修正 `fullCardStatuses`（覆盖 predictedRecord）
+5. ebbinghaus/active 模式保存 lastReviewedCardId
+6. status === 'review' 时调用 `addWrongAnswer`（所有模式统一写入错题本）
+7. 计算过滤后列表长度，处理索引边界
+8. 失败时：`setCardStatuses(prevCardStatuses)`、`setFullCardStatuses(prevFullCardStatuses)` 回滚，显示 Toast "标记失败，请重试"，不切换卡片
+
+**setCardStatus 返回值**：现在返回更新后的记录对象 `{ ...ex, ...update }`，用于 handleMark 状态同步。
+
+### 10. addWrongAnswer 统一来源设计
+**旧实现**：仅特定模式写入错题本。
+
+**新实现**：所有模式 status === 'review' 时均调用 `addWrongAnswer(cardId, categoryId, '', { unitId, chapterId, stem })`，统一错题本数据来源。
+
+### 11. 废弃轮数管理
+**移除的函数**（db.js）：
+- `incrementCategoryRound`
+- `decrementCategoryRound`
+- `getCategoryRound`
+- `setCategoryRound`
+- `getCategoryRoundsFromLocal`
+
+**移除的字段**（sync.js）：
+- `round_count` 字段的 push/pull 逻辑
+
+**影响**：背诵功能不再依赖"轮数"概念，改用 lastReviewedCardId 实现进度恢复，用 dueCardsCount 动态计算剩余卡片。
+
+### 12. 涉及文件
+| 文件 | 变化 |
+|------|------|
+| `src/services/db.js` | setCardStatus 重构：SM-2 隔离、userOverride 保护、返回记录对象；移除 5 个轮数管理函数 |
+| `src/services/sync.js` | pullFromCloud cardStatus 改为合并策略（基于 updatedAt），移除 `db.cardStatus.clear()`；移除 round_count 字段 push/pull |
+| `src/pages/Memorize.jsx` | handleComplete 修复（showCompleteModal）；weak 模式基于 wrongAnswers 筛选；handleMark 等待实际记录+失败回滚；predictedRecord 同步 SM-2 隔离；userOverride UI 提示；dueCardsCount useMemo；lastReviewedCardId 进度恢复；addWrongAnswer 统一写入 |
+
+### 13. 验证
+- 热更新预览：sequential/active 模式标记 review 不影响艾宾浩斯复习节奏
+- 热更新预览：weak 模式无错题时显示空状态，不再回退显示全部卡片
+- 热更新预览：handleComplete 不再崩溃，弹窗正常显示
+- 热更新预览：handleMark 失败时 UI 回滚，显示错误 Toast
+- 热更新预览：ebbinghaus/active 模式切换分类后进度正确恢复
+- 多设备同步：Pull 不再清空本地 cardStatus，基于 updatedAt 合并保留较新记录

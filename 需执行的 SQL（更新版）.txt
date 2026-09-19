@@ -1,0 +1,14 @@
+-- ============================================================
+-- 更新脚本：将 knowledge_tree 表的 "order" 字段重命名为 sort_order
+-- 原因：CloudBase REST API 不支持双引号转义 SQL 保留字，导致 400 Bad Request
+-- ============================================================
+
+-- 将 knowledge_tree 表的 "order" 字段重命名为 sort_order
+ALTER TABLE knowledge_tree RENAME COLUMN "order" TO sort_order;
+
+-- 验证：查看 knowledge_tree 表结构
+SELECT column_name, data_type FROM information_schema.columns 
+WHERE table_name = 'knowledge_tree' ORDER BY ordinal_position;
+
+-- 验证：查看数据是否完整
+SELECT level, COUNT(*) as count FROM knowledge_tree GROUP BY level ORDER BY level;

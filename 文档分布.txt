@@ -1,0 +1,2026 @@
+# ============================================================
+# AI 背诵卡片 项目文档分布 (Document Map)
+# 更新: 2026-07-07（安全修复 + Tailscale VPN 集成 + 悬浮窗快速录入 + Cloudbase 共享业务逻辑）
+# 用途: 快速定位项目文件，了解各文件职责与关键函数
+# ============================================================
+
+# ─────────── 一、项目入口 ───────────
+
+src/main.jsx
+  应用入口，React 18 createRoot + StrictMode，包裹 AppProvider
+
+src/App.jsx
+  应用根组件
+  - 路由定义: /, /category/:id, /settings, /memorize, /account, /test-db, /sql-tool, /test-classification
+  - RequireAuth: 路由守卫（未登录重定向到 /account）
+  - TabBarLayout: 底部 4 个 Tab (记录/背诵/统计/设置)
+  - 护眼模式 useEffect
+  - 种子数据初始化 useEffect（v2 版本，2026-06-17 更新）
+  - 延迟 1.5s 等待登录状态确定
+  - 云端用户跳过种子（数据从云端同步）
+  - 本地用户无分类时创建使用指南
+  - 执行前先调用 deduplicateUsageGuide() 清理可能重复的「使用指南」
+  - 种子版本 key: seed_usage_guide_v2
+  - 路由变化时加载分类 useEffect
+  关键函数: RequireAuth, TabBarLayout, AppShell
+
+src/index.css
+  ~1350 行全局样式，所有组件共用
+  主要 CSS 命名空间:
+  - .app-header: 页面顶部导航栏
+  - .card: 通用卡片容器
+  - .btn / .btn-primary / .btn-secondary / .btn-danger / .btn-ghost: 按钮系统
+  - .dialog-overlay / .dialog: 通用对话框
+  - .switch / .switch-slider: 开关组件
+  - .fab: 悬浮操作按钮
+  - .input: 通用输入框
+  - .settings-*: 设置页列表式布局
+  - .floating-inputbar-*: 悬浮输入栏
+  - .toast-container / .toast-item: Toast 提示
+  CSS 变量 (L8-L64): --color-* / --radius-* / --text-* / --shadow-*
+  护眼模式覆盖 (L149-L175): html[data-eye-protection="true"]
+
+
+# ─────────── 二、页面组件 (pages/) ───────────
+
+src/pages/AdminPanel.jsx (2026-06-30 精简：移除4个测试面板)
+  管理员面板（SQL 调整 + 网络测试）
+  - URL: /admin（仅 2114279975@qq.com 可见导航入口）
+  - Tab 切换: 🗄️ SQL 调整 / 🌐 网络测试（默认 SQL）
+  - SqlPanel: 快速查询、SQL模板、高级SQL执行（与 SqlTool 功能一致）
+  - NetworkTestPanel: 模拟APK环境网络请求测试、HTTP插件检测、环境诊断
+  - generateDiagnosis: 网络测试结果诊断建议生成（NetworkTestPanel 使用）
+  - 已移除（2026-06-30）: ClassificationTestPanel/CrossCategoryTestPanel/KnowledgeClassificationPanel/QuestionGenerationTestPanel 及相关辅助组件
+  - 依赖: src/services/cloudbase.js, @capacitor/core, @capacitor/http
+
+src/pages/SqlTool.jsx (2026-07-04 H1 安全加固)
+  SQL 工具页面（独立路由 /sql-tool，仅管理员邮箱 2114279975@qq.com 可见入口）
+  - App.jsx 中 /sql-tool 路由已包裹 <RequireAuth>（H1 修复）
+  - ADMIN_EMAILS 白名单: ['2114279975@qq.com']，权限不足显示提示页
+  - ALLOWED_SQL_PREFIXES: ['select', 'show', 'with', 'explain']（只读白名单）
+  - classifySqlStatement(sql): 解析 SQL 类型，返回 { type, allowed }
+  - runAdvancedSql: 执行非只读 SQL 时弹出 window.confirm 二次确认
+    · 默认 role = cloudbase_read_only_user（最受限）
+    · 不阻止管理员执行 DDL/DML，仅提示风险并标注当前角色
+  - 依赖: src/services/cloudbase.js (runSql, getEffectiveConfig)
+
+src/pages/Home.jsx
+  首页 / 分类列表页
+  - 展示所有分类卡片（含卡片计数 + 学习进度环）
+  - 新建分类（CategoryModal 弹窗）、重命名、删除
+  - 长按分类卡片弹出操作菜单
+  - 点击分类卡片导航到 /category/:id
+  - 进度环用 SVG circle 绘制
+
+src/pages/Category.jsx
+  分类详情页（某个分类下的单元与卡片列表）
+  - URL 参数: /category/:id
+  - 三层布局: Header + Main(可滚动) + InputBar/FloatingInputBar
+  - 单元概览下拉导航
+  - 多选模式 (selectionMode): 批量删除/移动卡片
+  - OCR 图片识别 → generateCards
+  - 卡片滑动操作（收藏/详情）
+  - 卡片点击预览对话框
+  - 移动卡片到其他分类对话框
+  - 指定分类归类（任务 3）：CardSelectionModal 选择卡片 → TargetCategorySelect 选择/新建目标分类 → classifyCardsByCategoryContent 生成目标分类单元方案 → UnitReorganizeConfirm 确认 → batchUpdateCardsCategoryAndUnit 执行移动并清理原空单元/空分类
+  - 数据一致性保障（任务 5）：关键整理/移动/删除操作前 createDataSnapshot，成功后 syncToSupabase；Toast 3 秒内提供“撤销”动作，restoreDataSnapshot 后重新同步云端
+  - UI/UX 优化（任务 6）：AI 调用前提示“AI 正在分析知识点...”；执行事务前提示“正在整理卡片...”；
+    同步前提示“正在同步数据到云端...”；AI 调用前按 knowledge_point 去重；空分类提示“该分类下没有卡片可整理”
+  - 错误提示优化：通过 buildOperationErrorMessage 区分网络中断、超时、AI 配置异常、空结果，并给出解决建议
+  - 删除确认对话框
+  - 根据 inputBarMode (fixed/floating) 条件渲染底部固定栏或右侧悬浮窗
+  → 定位: 输入栏问题 → 此文件 L764-820
+  → 定位: main 滚动容器 → L635-643
+  → 定位: 多选工具栏 → L585-632
+  → 定位: 生成卡片 handleGenerate → L40-85
+  → 定位: [P0-3修复] handleMergeSummaryConfirm 强模型索引错位 → L778-932（构建 kpIndexToCard 映射）
+  → 定位: [P0-4修复] addUnitsWithMatching categoryId 缺失 → L1356-1456（cardsToAdd/cardsWithId 补全 categoryId）
+  → 定位: [P2-3修复] handleStepBack 快照恢复 → L1565-1629（Step 2→1 从快照恢复 kpConfirm 数据）
+  → 定位: [P2-4修复] timeoutCancelledRef 超时取消 → L50, L655-666, L744-748
+  → 定位: [P2-8修复] handleKpConfirm originalIndex 还原 → L692-716（出现顺序匹配替代 find）
+  → 定位: [P2-10修复] addUnitsWithMatching 跨章节去重 → L1416-1431（chapterId+name 组合键）
+  → 定位: [P2-11修复] handleMergeSummaryConfirm 回退缓存 → L814-819（检查快照缓存）
+  → 定位: [P2-12修复] handleAudioRecord 统一新流程 → L1752-1786（调用 handleGenerate）
+  → 定位: [P3-1清理] DuplicateCardConfirm 死代码已移除（import/state/函数/组件）
+  → 定位: [P3-2标注] NewCardPanel 死代码标注 → L4042-4043（保留组件，setShowNewCardPanel(true) 从未调用）
+  → 定位: [P3-4修复] order 字段递增 → L1471-1483（baseOrder + idx）
+  → 定位: [P3-5修复] 错误消息友好化 → L1256-1267, L1356-1367
+
+src/pages/Memorize.jsx
+  背诵学习页面
+  - 4 种学习模式: 顺序背诵 / 活跃记忆 / 艾宾浩斯 / 薄弱专攻
+  - 卡片 3D 翻转效果 (CardItem large 模式)
+  - 滑动手势: 左滑操作菜单，右滑收藏
+  - 底部操作栏: 已掌握 / 学习中 / 待掌握 / 移动 (4 按钮)
+  - 学习进度统计: 已掌握/待掌握/新卡片
+  - 卡片编辑/移动/删除成功后触发 syncToSupabase；3 秒内 Toast 提供撤销，恢复完整本地快照并重新同步云端
+  - [2026-06-19 全面修复] SM-2 参数隔离：sequential/active 模式 review 不再修改 SM-2 参数（与 db.js 同步）
+  - [2026-06-19 全面修复] userOverride 保护：sequential/active review/learning 设为 true，mastered 清除；ebbinghaus 保留原值
+  - [2026-06-19 全面修复] userOverride UI 提示：fullCardStatuses[id]?.userOverride 为 true 时显示"用户已手动标记"灰色徽标
+  - [2026-06-19 全面修复] 完成弹窗：handleComplete 修复崩溃，新增 showCompleteModal 状态，ebbinghaus/非 ebbinghaus 模式弹窗内容不同
+  - [2026-06-19 全面修复] 进度恢复：lastReviewedCardId（localStorage 保存），ebbinghaus/active 模式切换分类后自动定位到下一张
+  - [2026-06-19 全面修复] dueCardsCount 动态计算：useMemo 基于 filteredCards 和 fullCardStatuses，不再使用 state
+  - [2026-06-19 全面修复] handleMark 状态同步：等待 setCardStatus 返回实际记录 actualRecord，失败时回滚 cardStatuses/fullCardStatuses 并显示 Toast
+  - [2026-06-19 全面修复] weak 模式数据源：基于 wrongAnswers 表筛选（wrongAnswerCardIds Set），无错题时返回空数组 []
+  - [2026-06-19 全面修复] addWrongAnswer 统一来源：所有模式 status==='review' 时均写入错题本
+  - [2026-06-19 全面修复] 废弃轮数管理：移除 incrementCategoryRound 等调用，改用 lastReviewedCardId 实现进度恢复
+  → 定位: handleComplete → L837-847
+  → 定位: handleMark → L911-1036
+  → 定位: dueCardsCount useMemo → L556-561
+  → 定位: weak 模式 filteredCards → L547-550
+  → 定位: lastReviewedCardId 恢复 → L333-346（ebbinghaus）/ L488-501（active shuffle）
+  → 定位: userOverride UI 提示 → L1419-1424
+  → 定位: 完成弹窗渲染 → L2230-2296
+
+src/pages/UnitTestMain.jsx (2026-06-17 重构)
+  单元检测入口页
+  - 快捷入口: 答题记录 / 我的错题本 / 题库管理（3 个等宽按钮）
+  - 检测概览面板（可折叠，max-height: 60vh，独立滚动）:
+    · 视图切换 Tab: [单元视图] | [章节视图]（胶囊式，--color-primary 选中态）
+    · 单元视图: 分类→单元两级结构，点击分类展开/折叠，点击单元定位跳转
+    · 章节视图: 分类→章节→单元三级结构，章节行展开后显示 [章节检测][章节复习][更新题库] 操作按钮 + 该章节下单元列表；未归属章节的单元单独显示在「未归章单元」区域（黄色背景标识）
+    · 章节操作按钮配色: primary-light / success-light / accent-light
+    · 状态: overviewMode('unit'|'chapter'), expandedCats, expandedChapters, selectedChapterId, activeChapterCategoryId
+  - 分类卡片区: 每个分类一张卡片，内含 UnitGroup 折叠面板 + 分类级操作按钮（分类检测/分类复习/更新题库）
+  - 删除/移动卡片弹窗
+
+src/pages/UnitTestPage.jsx (2026-06-15 新增记录)
+  单元检测答题页面
+  - 顶部进度 (1/3)、计时器、收藏按钮
+  - 题目渲染: TestCardItem
+  - 答题状态: answers[currentId]
+  - 即时反馈 / 提交后反馈
+  - 底部操作按钮: 上一题 / 提交 / 下一题 / 结束答题
+  - [2026-06-15 修复] 按钮逻辑：未作答且非即时反馈时，"下一题" 禁用并加提示横幅 "请先选择答案"
+  - 提交完成后切换为"下一题"
+  - [2026-06-15 补充] URL 参数 ?resume=continue|restart 控制断点续考：
+    · continue → 跳过弹窗，直接把 session 的 questions/answers/currentIndex/elapsed/markedQuestions/feedbackMap 灌入组件
+    · restart  → 清空 session 的 answers/currentIndex/elapsed/feedbackMap，再由 loadQuestions 加载最新题库
+    · 空字符串 → 保持原有"有未完成会话时弹窗询问"逻辑
+  - [2026-06-15 补充] 进入页面时会与当前题库交叉校验，已被删除的题目从 session 中剔除；全部被删则自动清理 session
+
+src/pages/AnswerRecordPage.jsx (2026-06-15 改写)
+  答题记录页（/test/answer-records）
+  - 顶部统计：未完成 N 条 · 已完成 N 条
+  - [新增] "未完成测试"分组：橙色边框/未完成徽章/进度条+已答 X/Y 题+最后保存时间
+    · 卡片可展开：显示用时、当前题号、题目预览（前 5 题，已答打勾）
+    · 三按钮操作：重新开始（btn-secondary）/删除（btn-ghost 红字）/继续答题（btn-primary）
+    · 三个操作都先弹居中确认弹窗，再跳转或删除
+    · 继续/重新开始 → /test/unit?mode=...&unitId|categoryId=...&resume=continue|restart
+  - "已完成记录"分组：原答题报告卡片布局（正确率 + 正确数/总数 + 展开看每题对错）
+  - 删除完成记录后立即从列表移除并收起展开
+  - 居中确认弹窗 useState<confirmTarget | null> + useMemo 计算标题/描述/按钮文案/危险样式
+
+src/pages/UnitTestResult.jsx (2026-06-15 新增记录)
+  单元检测答题结果页
+  - 成绩卡片: 正确数 / 总数 / 用时
+  - 错题列表（可一键重做）
+  - 返回单元检测入口 / 继续其他分类
+
+src/components/TestCardItem.jsx (2026-06-15 新增记录)
+  单元检测题目渲染组件（单选/多选/判断/填空 4 种题型分支）
+  - 顶部题型标签 + 难度标签
+  - 题干渲染
+  - 选项: 28x28 label 圆/方（圆形单选，方形多选）+ 文本；选中态、正确/错误反馈态
+  - [2026-06-15 修复] 28x28 label 使用 truncateLabel() 截断（防止 "正确/错误/待掌握" 等长 label 竖向堆叠）
+  - 答题反馈: showFeedback + feedbackResult
+  - 知识点: 默认收起，点击展开，显示"学习提示"与"关联卡片 ID"
+  - 填空题: ____ 渲染为 input；判断题: 选择"错误"后可标记错误位置
+  → 定位: 顶部状态徽章 → 1-90；选项渲染 renderSingleChoice/renderMultiChoice → 120-260；知识点展开 → L625-697
+
+src/pages/UnitTestMain.jsx (2026-06-17 重构)
+  单元检测入口页
+  - 快捷入口: 答题记录 / 我的错题本 / 题库管理（3 个等宽按钮）
+  - 检测概览面板（可折叠，max-height: 60vh，独立滚动）:
+    · 视图切换 Tab: [单元视图] | [章节视图]（胶囊式，--color-primary 选中态）
+    · 单元视图: 分类→单元两级结构，点击分类展开/折叠，点击单元定位跳转
+    · 章节视图: 分类→章节→单元三级结构，章节行展开后显示 [章节检测][章节复习][更新题库] 操作按钮 + 该章节下单元列表；未归属章节的单元单独显示在「未归章单元」区域（黄色背景标识）
+    · 章节操作按钮配色: primary-light / success-light / accent-light
+    · 状态: overviewMode('unit'|'chapter'), expandedCats, expandedChapters, selectedChapterId, activeChapterCategoryId
+  - 分类卡片区: 每个分类一张卡片，内含 UnitGroup 折叠面板 + 分类级操作按钮（分类检测/分类复习/更新题库）
+  - 删除/移动卡片弹窗
+
+src/pages/SettingsMain.jsx
+  设置主页面（归类收缩入口）
+  - 展示分类入口卡片：AI服务、语音识别、显示与偏好、云端同步、开发者选项、PC引擎代理、Tailscale VPN
+  - 点击卡片跳转到对应子页面
+
+src/pages/SettingsTailscale.jsx (2026-07-04 新增)
+  Tailscale VPN 设置子页面
+  - 连接状态展示（未连接/运行中-未登录/已连接）
+  - 启动/停止 Tailscale 引擎
+  - 获取登录链接（打开浏览器 OAuth 登录）
+  - 本设备信息（主机名、Tailscale IP、DNS 名称）
+  - 网络节点列表（对端设备 + 在线状态）
+  - 自动连接开关（localStorage 保存）
+  - 登出账户
+  - 依赖: src/services/tailscale.js, @capacitor/core
+
+src/pages/SettingsAiService.jsx (2026-06-19 优化)
+  AI服务设置子页面
+  - AI服务提供商切换（DeepSeek/讯飞星火/火山引擎/阿里云千问）
+  - 服务提供商选择改为底部抽屉式菜单（slideUp 动画），避免循环点击
+  - DeepSeek API Key配置与测试
+  - 讯飞星火APIKey/APISecret配置与测试（支持单字段完整token或双字段分开输入）
+  - 火山引擎/阿里云千问 API Key 配置与测试
+  - 模型选择
+  - currentActiveModel 使用 useMemo 缓存（避免每次渲染重新计算触发非预期 effect）
+  - 估算花费卡片添加"基于 token 用量估算"说明
+  - 添加 onContextMenu 和 onSelectStart 防止文本菜单弹出
+  - 统一返回按钮样式（settings-sub-header）
+  → 定位: 测试连接验证逻辑 → handleSparkTest L74-84
+  → 定位: currentActiveModel useMemo → 顶部
+  → 定位: 底部抽屉服务提供商选择菜单 → 文件末尾
+
+src/pages/SettingsSpeech.jsx (2026-06-19 优化)
+  语音识别设置子页面
+  - 识别模式切换（浏览器语音/Whisper API/讯飞IAT/阿里云千问ASR）
+  - Whisper API配置与测试
+  - 讯飞语音听写配置与测试
+  - 阿里云千问ASR配置与测试，添加"此 API Key 与「AI 服务 → 阿里云千问」共享"提示横幅
+  - 返回按钮
+
+src/pages/SettingsDisplay.jsx (2026-06-19 优化)
+  显示与偏好设置子页面
+  - 字体大小调节（小/标准/大）
+  - 护眼模式开关
+  - 输入栏模式切换
+  - OCR 自动生成卡片开关（2026-06-19 修复：从 localStorage 直读改为 AppContext state，支持云端同步）
+  - OCR 缓存清理：显示当前缓存数量，空缓存时禁用清理按钮，清理后刷新数量
+  - 返回按钮
+  → 定位: OCR 开关 → useApp state.ocrAutoGenerate + setOcrAutoGenerate
+  → 定位: OCR 缓存数量 → ocrCacheCount state + useEffect
+
+src/pages/SettingsCloud.jsx (2026-06-19 优化)
+  云端同步设置子页面
+  - 未登录屏蔽（显示"请先登录云端账号"提示）
+  - 设置同步: 上传所有设置 / 从云端同步（25 个字段，调用 settingsSync API）
+    · 上传前弹 ConfirmDialog 二次确认
+    · setterMap 包含 setOcrAutoGenerate（OCR 开关云端同步）
+  - 用户资料同步: 头像+昵称展示 / 上传资料 / 下载资料（调用 userProfile API）
+    · 2026-06-19 修复：handleUploadProfile 完整传递 userProfile 字段（nickname/avatarUrl/avatarType/tags），不再强制覆盖自定义头像
+  - 返回按钮
+  → 定位: 上传设置 → handleUploadSettings L83-101
+  → 定位: 云端同步 → handleSyncSettings L103-158
+  → 定位: 上传资料 → handleUploadProfile L160-172
+  → 定位: 下载资料 → handleDownloadProfile L174-186
+  → 定位: 上传确认弹窗 → confirmUploadSettings state + ConfirmDialog
+
+src/pages/SettingsDeveloper.jsx (2026-06-19 完全重写)
+  开发者选项设置子页面
+  - 开发者模式总开关
+  - AI 调试面板开关（依赖开发者模式，disabled 控制）
+    · 状态保存在 AppContext.aiDebugPanel + localStorage('app_ai_debug_panel')
+  - AI 调用统计概览（复用 aiCallLog.js 的 getAiCallStats）
+    · 显示总调用次数、成功/失败次数、累计 token、估算花费
+  - 更多功能占位
+  - 统一返回按钮样式（settings-sub-header）
+  - 添加 onContextMenu 和 onSelectStart
+
+src/pages/Settings.jsx
+  （已删除，2026-06-19 清理废弃文件，667 行死代码 + SUPABASE_INIT_SQL 常量）
+
+src/pages/Account.jsx
+  账号页面（登录/注册/个人主页）
+  - 未登录: 本地模式登陆 / 云端模式登录/注册 表单
+  - 已登录: 学习统计面板 + 收藏夹 + 用户信息
+  - 统计卡片: 总卡片数/今日已学/已掌握/学习中/待开始/收藏数（可点击跳转或展开详情）
+  - 收藏列表: 可展开/收起，支持取消收藏
+  - 卡片详情弹窗 (selectedCard)
+  - 本地模式: leaveLocalMode 清除
+  - 云端登录/注册/忘记密码接入 runSupabaseWithStartupRetry，解决 APK 刚启动网络栈未稳定时首次 fetch failed 误报“无法连接”
+  - 安全修复（2026-07-04）:
+    · H3 本地模式 PIN 码保护（可选，4-6 位数字，PBKDF2 + SHA-256 + 50000 迭代）
+      · getLocalPinKey(name) / hashLocalPin(pin, name) / constantTimeEqualStr(a, b) (L22-66)
+      · 已设 PIN 的昵称登录必须输入正确 PIN；未设 PIN 可直接登录或首次设置
+      · PIN 通过 localStorage['app_local_pin_<name>'] 存储（哈希值，非常量时间比较）
+      · 已登录本地用户可在数据管理区点击「清除本地 PIN」移除
+    · H4 邮箱验证回调防登录固定攻击
+      · signUp 时把 inputEmail 写入 sessionStorage['app_pending_verify_email']
+      · 邮箱验证 hash 回调中校验 setSession 返回的 user.email 与待验证邮箱一致，不匹配则 signOut + 提示
+  → 定位: 本地登录(含 PIN) → handleLocalLogin L322-384
+  → 定位: 清除本地 PIN → handleClearLocalPin L386-397
+  → 定位: 云端登录 → handleLogin L399+
+  → 定位: 统计卡片 → renderStatCard L501-520
+  → 定位: 收藏切换 → toggleBookmarks L366-381
+  → 定位: 展开详情 → handleExpandDetail L191-210
+
+
+# ─────────── 三、公共组件 (components/) ───────────
+
+src/components/CardItem.jsx
+  卡片组件，双模式
+  - compact (列表项): 正面问题 + 状态点 + 收藏星标 + 删除按钮
+  - large (背诵页): 3D 翻转 (rotateY 180deg)，正面/背面切换
+  - 编辑问题和答案弹窗: 原始知识点 textarea 使用 card.knowledge_point 预填；
+    保存时写回 knowledge_point/front/back；可基于知识点重新生成问题与答案
+  Props: card, mode, onDelete, onEdit, onToggleBookmark, bookmarked, onCardAction 等
+  → 定位: 删除卡片 → handleDelete L85-95
+  → 定位: 编辑弹窗原始知识点 textarea → L215-231
+  → 定位: 保存 knowledge_point/front/back → L315-329
+  → 定位: 收藏同步 → useEffect L31-35
+
+src/components/UnitGroup.jsx
+  单元分组折叠面板
+  - 展示某个单元下所有卡片（CardItem compact 模式）
+  - 折叠/展开切换，header 显示单元名 + 卡片数 + 已掌握数
+  - 支持多选模式（selectionIds）
+  Props: unit, cards, bookmarks, selectionIds, onCardClick, onCardLongPress 等
+
+src/components/InputBar.jsx
+  ~700 行输入栏组件
+  - 主行: [▾工具栏展开] [textarea输入框(含展开图标)] [🎤麦克风] [↑发送]
+  - 辅行 (toolbarOpen): [📷拍照] [🖼相册] [摘要级别: 精简/标准/详细]
+  - 多行文本展开面板 (expandOpen): 输入框内部右侧展开图标 → 底部滑入面板 → 大textarea编辑 → 确认/取消
+  - textarea 自动扩展: min 1行 / max 3行（autoResize + ref）
+  - 语音识别: web-speech (浏览器) / whisper-api (云端) 双模式
+  - AI 语音整理: cleanUpSpeechText → AI 润色识别文本
+  - 忙碌状态条: 录音/识别/整理状态指示
+  - 拍照/相册: 隐藏 file input + OCR
+  Props: value, onChange, onSubmit, onImageOCR, ocrLoading, summaryLevel, onSummaryLevelChange, disabled, apiKey, model, onToast
+  → 定位: 语音录制 startRecording → L230-330
+  → 定位: AI 整理 → handleCleanupAndWrite L141-160
+  → 定位: 拍照/相册 → handleImageSelect L466-478
+  → 定位: 卸载清理 useEffect → L441-466
+
+src/components/FloatingInputBar.jsx
+  右侧悬浮窗容器，包裹 InputBar
+  - 收缩: 右侧半透明小箭头 (opacity 0.25)
+  - 展开: 280px 宽面板，可拖拽上下移动
+  - 点击外部/滚动自动收缩
+  - 拖拽手柄 + 圆形关闭按钮
+  State: open, posY
+
+src/components/FloatingTargetSelector.jsx (2026-07-04 新增，悬浮窗快速录入 Task 4)
+  三级归属选择器（分类 ▸ 章节 ▸ 单元），覆盖在悬浮窗输入区上
+  - 默认全部折叠（符合用户选择A）
+  - 顶部: 标题 + 关闭按钮
+  - 检索框: 关键词过滤分类/章节/单元名
+  - 三级树形结构: 分类(📁) ▸ 章节(📂) ▸ 单元(📄)
+    · 点击 ▶/▼ 箭头展开/折叠
+    · 点击分类名 → 选中分类（不指定章节/单元）
+    · 点击章节名 → 选中章节（不指定单元）
+    · 点击单元名 → 选中单元
+    · 选中态高亮: .floating-target-row-active
+  - 底部最近使用: recentTargets 数组快速复用
+  - 异步加载: toggleCat 加载章节列表, toggleChapter 加载单元列表
+  Props: currentTarget, onSelect(target), onClose, recentTargets
+  依赖: db.js (getCategories, getChaptersByCategory, getUnitsByChapter)
+  → 定位: 分类列表加载 → useEffect L22-24
+  → 定位: 选中单元/章节/分类回调 → L52-64
+
+src/components/FloatingQuickRecall.jsx (2026-07-04 新增，悬浮窗快速录入 Task 5)
+  快速回忆条：显示最近3条草稿
+  - 点击 → 复用内容到输入框 (onRecall)
+  - 长按 600ms → 删除草稿（confirm 确认）
+  - drafts 为空时返回 null（不渲染）
+  - refreshKey 变化时重新加载草稿列表
+  Props: onRecall(content), refreshKey
+  依赖: db.js (getRecentDrafts, deleteDraft)
+  → 定位: 草稿加载 loadDrafts → L13-20
+  → 定位: 长按删除 handleTouchStart → L28-35
+  → 定位: 点击复用 handleClick → L44-46
+
+src/components/FloatingTemplates.jsx (2026-07-04 新增，悬浮窗快速录入 Task 6)
+  模板条：点击模板填入输入框作为骨架
+  - 4 种内置模板: 名词解释 / 问答 / 历史事件 / 公式
+  - 点击模板按钮 → onApply(content, key)
+  Props: onApply(content, templateKey)
+  → 定位: TEMPLATES 常量 → L1-6
+
+src/components/FloatingDraftBanner.jsx (2026-07-04 新增，悬浮窗快速录入 Task 9)
+  Category 页面顶部草稿提醒条
+  - 显示该分类下待生成的草稿数，提供「批量生成」和「查看」按钮
+  - 批量生成：调用 draftService.generateCardsFromDrafts，带进度回调
+  - 查看：展开草稿列表，每条可删除
+  Props: categoryId, aiConfig, onGenerated, onToast
+  → 定位: Category.jsx L3825 挂载
+  → 定位: handleGenerate → 调用 generateCardsFromDrafts
+  → 定位: CSS → .floating-draft-banner* (index.css L5265-5341)
+
+src/components/CategoryModal.jsx
+  分类名称编辑弹窗（新建/重命名）
+  Props: title, value, confirmLabel, onConfirm, onClose
+
+src/components/ConfirmDialog.jsx
+  通用确认对话框
+  Props: message, confirmLabel, confirmClass, onConfirm, onCancel
+
+src/components/ToastView.jsx
+  全局 Toast 提示组件
+  - 支持类型: success (绿) / error (红) / info (蓝) / warn/warning (黄)
+  - 支持操作按钮 (actions array)
+  - 自动消失 (AUTO_HIDE_DELAY)
+  → 定位: CSS → .toast-container L1320, .toast-item L1250
+
+src/components/NewCardPanel.jsx
+  新卡片管理弹窗（OCR识别/AI生成后打开）
+  - 展示新生成的卡片列表（正面/背面预览）
+  - 支持: 编辑卡片内容、归类到已有单元、新建单元、删除卡片
+  - 支持批量选择: 批量改单元、批量删除
+  - 关键防御: safeCards / safeExistingUnits (props为非数组时安全降级)
+  - 移动端适配: 所有按钮 minHeight ≥ 44px
+  Props: visible, cards, existingUnits, onCancel, onConfirm, showToast
+  → 定位: props防御 → L23-24 (safeCards/safeExistingUnits)
+  → 定位: 卡片列表渲染 → L279 (safeCards.map)
+  → 定位: 单元菜单渲染 → L363, L410 (safeExistingUnits.map)
+
+src/components/KnowledgePointConfirm.jsx
+  知识点确认弹窗（AI 生成卡片 Step 1 → Step 2 之间）
+  - 展示 OCR/输入内容拆分出的原始知识点
+  - 支持编辑、删除、新增知识点
+  - 底部操作区: 取消 / 确定（2026-06-19 延迟化：不在此步骤生成卡片）
+  - 移动端防遮挡: .knowledge-point-confirm-overlay zIndex=120 高于底部输入栏；
+    .knowledge-point-confirm-list 单独滚动；
+    .knowledge-point-confirm-actions 使用 sticky bottom + safe-area，确认按钮始终可见
+  → 定位: 弹窗容器与层级 → L30-52
+  → 定位: 可滚动知识点列表 → L87-95
+  → 定位: 底部粘性按钮区 → L210-229
+
+src/components/NewCardPreviewPanel.jsx (2026-06-19 新增 / 2026-06-19 P1修复 / 2026-06-19 P3修复)
+  新卡片预览面板（延迟化流程 Step 5）
+  - 三下滑栏结构：章节 → 单元 → 卡片
+  - 第一层：章节列表（按 chapterName 分组），点击展开/折叠
+  - 第二层：单元列表（按 unitName 分组），点击展开/折叠
+  - 第三层：卡片列表，每张卡片显示正面（可编辑 textarea）、背面（可编辑 textarea）、知识点（只读灰色小字）
+  - 底部操作栏：← 上一步 / 确认保存
+  - 移动端适配：所有按钮 minHeight: 44px，使用 CSS 变量
+  → 定位: [P1-2修复] _panelIdx 稳定标识替代内容匹配 → L82-101, L104-141, L259-261
+  → 定位: [P1-3修复] handleConfirm 过滤空卡片 → L113-118, L127
+  → 定位: [P2-6修复] NewCardPreviewPanelErrorBoundary → L4-58, L489-496
+  → 定位: [P3-7修复] cardIndexMap 使用 useMemo 优化（避免每次渲染重复构建） → import 行 + cardIndexMap 定义
+  Props: unitDataList, flatPanelCards, categoryId, onConfirm, onBack, isFirstStep, pointsToUse, showToast, addUnitsWithMatching
+  → 定位: 组件定义 → L21-32
+  → 定位: 三下滑栏渲染 → L167-370
+  → 定位: 保存逻辑 handleConfirm → L98-135
+
+src/components/CardSelectionModal.jsx
+  通用卡片选择弹窗（任务 1）
+  - 按单元分组加载卡片，支持全选、单元全选、反选、卡片勾选
+  - 点击卡片可在题目 / 原始知识点之间翻转
+  - 分类页智能单元整理和指定分类归类共用
+  - 任务 6 性能与移动端优化：VIRTUAL_SCROLL_THRESHOLD=50，超过 50 张时按单元分批渲染 visibleCards；
+    底部 footer 使用 sticky bottom + safe-area，确认按钮保持 44px 以上触控高度
+  - 2026-06-15 修复：三个智能归类入口共用此抽屉，抽屉高度改为 86dvh，内容区增加 data-mobile-scroll + pan-y，保证手机 App 端可滚动
+
+src/components/UnitReorganizeConfirm.jsx
+  AI 单元整理确认弹窗（任务 2 / 任务 3 复用）
+  - 展示 AI 生成的单元方案，可编辑单元名称
+  - 支持现有单元 / 新建单元标识
+  - 指定分类归类确认后由 Category.jsx 分支执行跨分类移动
+  - 移动端：弹窗 maxHeight 使用 calc(100dvh - 32px)，内容区独立滚动，底部操作栏保留 safe-area
+  - 2026-06-15 修复：内容区增加 data-mobile-scroll="unit-reorganize-content"、touchAction: pan-y、overscrollBehavior: contain
+  - 2026-06-15 紧凑修复：
+    · 弹窗高度改为明确 height: 'min(calc(100dvh - 32px), 820px)'，宽度 100%，圆角 20px，overflow: hidden
+    · 顶部标题区 padding 20/20/16，图标 48px，标题字号 19px，副标题 14px
+    · AI fallback 警告区 padding 提升到 12/14px，字号 14px
+    · 内容区 padding 18px，单元 section 间距 16px
+    · 单元头部分隔线边框 1px，内部 padding 14px；分类标签/单元名区均增加行距
+    · "现有单元/新建单元"胶囊样式强化，padding 8/14px，字号 13px，配合"N 张"同层次标签
+    · 单元名输入框 minHeight 提升到 48px，padding 12/14px，字号 16px，加粗 700
+    · 卡片按钮 minHeight 64px，padding 14px，题目/知识点状态标签间距加开至 8px
+    · 底部操作栏 padding 14/18，按钮 minHeight 50px，flex: 1 平均分配
+    · header/footer 均加 flex-shrink: 0，内容区 overflowY: auto，三段互不叠加
+    · 关键根因：className="dialog" 的 CSS 默认 max-height: 80vh + margin: 16px + overflow-y: auto 在移动端会把弹窗压缩并让整个弹窗本身滚动，造成内部内容与底部按钮被输入栏遮挡；故加 maxHeight: 'none' + margin: 0 + overflowY: 'hidden' 覆盖之
+
+src/components/TargetCategorySelect.jsx
+  目标分类选择弹窗（任务 3）
+  - 显示现有分类列表和 cardCount
+  - 支持新建目标分类
+  - 底部固定上一步 / 下一步，适配移动端 safe-area
+  - 2026-06-15 修复：高度改为 calc(100dvh - 32px)，列表内容区增加 data-mobile-scroll="target-category-content" 和 pan-y 独立滚动
+  - 2026-06-15 紧凑修复：
+    · 弹窗高度明确为 height: 'min(calc(100dvh - 32px), 820px)'，宽度 100%，圆角 20px，overflow: hidden
+    · 顶部标题区 padding 20/20/16，标题字号 19px，副标题 14px，增加排版空间
+    · 内容区 padding 18px，gap 12px
+    · 分类选项按钮 minHeight 60px，padding 14/18px，字号 15px 加粗 600，卡片数 13px 副号
+    · 选中状态边框更粗 (2px solid)，背景色更明显（primary-light）
+    · 新建分类按钮 minHeight 52px，与 Category 页大按钮风格一致
+    · 底部操作栏按钮 minHeight 50px，flex: 1 平均分配
+    · header/footer 均加 flex-shrink: 0，内容区 overflowY: auto，三段互不叠加
+    · 关键根因：className="dialog" 的 CSS 默认 max-height: 80vh + margin: 16px + overflow-y: auto 在移动端会把弹窗压缩并让整个弹窗本身滚动，造成内部内容与底部按钮被输入栏遮挡；故加 maxHeight: 'none' + margin: 0 + overflowY: 'hidden' 覆盖之
+
+src/components/CrossCategoryConfirm.jsx
+  跨分类 AI 全权归类确认弹窗（任务 4）
+  - 展示 AI 生成的 分类 → 单元 → 卡片 三级结构
+  - 支持分类名、单元名直接编辑
+  - 支持分类/单元折叠，点击卡片可翻转查看原始知识点
+  - 底部固定取消 / 确认执行按钮，适配移动端 safe-area
+  - 2026-06-15 修复：内容区增加 data-mobile-scroll="cross-category-content"、touchAction: pan-y、overscrollBehavior: contain，保证手机 App 端可滚动
+  - 2026-06-15 紧凑/叠加修复：
+    · 弹窗高度由 maxHeight 改为明确的 height: 'min(calc(100dvh - 32px), 820px)'，避免被 .dialog 类默认 max-height: 80vh 截断
+    · 弹窗宽度改为 100%，加 borderRadius: 20px，overflow: hidden，内部 flex column 三段布局互不叠加
+    · 顶部标题区 padding 从 16/18/12 扩大到 20/20/16，图标增大到 48px，字号加大到 19px
+    · 内容区 padding 从 14px 扩大到 18px，分类/单元 section gap 从默认提升到 16px
+    · 分类/单元名输入框 minHeight 提升到 48px/46px，padding 10px 以上，字号 15-16px
+    · 分类折叠按钮提升到 44x44，单元折叠按钮 42x42，符合移动端触控标准
+    · 每张卡片按钮 minHeight 提升到 64px，padding 14px，翻转后字区分度加强
+    · 底部操作栏按钮 minHeight 提升到 50px，flex: 1 平均分配
+    · 头/尾显式添加 flex-shrink: 0，保证内容滚动区独立计算高度
+    · 所有间距、圆角、字体粗细与 Category 页保持一致，确保"AI全权归类方案"不再出现紧凑叠加
+    · 滚动区显式声明 overflowY: auto + overflowX: hidden，WebkitOverflowScrolling + overscrollBehavior: contain
+    · 关键根因：className="dialog" 的 CSS 默认 max-height: 80vh + margin: 16px + overflow-y: auto 在移动端会把弹窗压缩并让整个弹窗本身滚动，造成内部内容与底部按钮被输入栏遮挡；故加 maxHeight: 'none' + margin: 0 + overflowY: 'hidden' 覆盖之
+
+src/components/DuplicateCardConfirm.jsx (2026-06-17 新增)
+  重复卡片确认对话框（双分类）
+  - 检测到重复卡片时弹出，支持两个分类切换：重复卡片 / 新卡片
+  - 重复卡片：默认全部勾选（取消构建），显示新卡片内容及相似的已有卡片
+  - 新卡片：默认全部不勾选（保留构建），显示新卡片题目和答案
+  - 支持单张卡片勾选/取消，支持全选/取消全选
+  - 底部确认构建按钮，确认后只构建未勾选的重复卡片和已勾选的新卡片
+  - 移动端适配：maxHeight: 85vh，内容区独立滚动，按钮 minHeight: 44px
+  - 重复检测算法：基于 simpleTextSimilarity（Jaccard 相似度），阈值 80%，系统判断而非 AI 判断
+
+src/__tests__/organizeModalMobileScroll.test.js (2026-06-15 新增)
+  智能归类三个入口移动端滚动回归测试
+  - 校验 CardSelectionModal 使用 86dvh + pan-y + overscroll-behavior
+  - 校验 TargetCategorySelect / UnitReorganizeConfirm / CrossCategoryConfirm 内容区独立滚动和 safe-area
+
+src/__tests__/knowledgePointConfirmLayout.test.js
+  KnowledgePointConfirm 移动端布局回归测试
+  - 校验弹窗包含专用 class
+  - 校验底部按钮区 sticky bottom 与 safe-area，避免再次被底部输入栏/小视口遮挡
+
+src/utils/cardKnowledgePoint.js
+  生成卡片原始知识点回填工具
+  - attachOriginalKnowledgePoints(cards, originalKnowledgePoints)
+  - Step 2 AI 漏返或改写 knowledge_point 时，以用户在 KnowledgePointConfirm 确认/编辑后的原始知识点为准
+  → 定位: [P2-9修复] 优先使用 kpMarker/kpIndex 匹配知识点 → L7-46
+
+src/utils/smartOrganizeUx.js (2026-06-14 新增)
+  智能归类任务 6 UI/UX 辅助工具
+  - dedupeCardsByKnowledgePoint(cards): AI 调用前按 knowledge_point 去重，保留无 knowledge_point 的卡片
+  - buildSmartOrganizeSuccessMessage(stats): 生成“已整理 N 张卡片，创建 N 个新单元，删除 N 个空单元...”统计提示
+  - buildOperationErrorMessage(error, fallback): 网络、超时、API Key、空结果等错误转为可操作建议
+
+src/__tests__/smartOrganizeUx.test.js (2026-06-14 新增)
+  智能归类任务 6 回归测试
+  - 校验 knowledge_point 去重、详细成功/错误提示
+  - 校验 Category 加载/同步/空状态文案
+  - 校验 CardSelectionModal 大列表分批渲染与 sticky safe-area 底部栏
+
+src/__tests__/cardKnowledgePoint.test.js
+  原始知识点回填回归测试
+  - AI 漏返 knowledge_point 时按顺序写入
+  - AI 改写 knowledge_point 时仍以用户确认原文为准
+
+src/__tests__/mathText.test.js (2026-06-30 新增)
+  数学公式解析单元测试（10 个用例，TDD 验证）
+  - 空字符串/非字符串边界
+  - 纯文本（无公式）
+  - 行内公式 $...$
+  - 块级公式 $$...$$
+  - \$ 转义（显示字面量 $）
+  - 未闭合 $ 容错（当普通文本）
+  - 多公式混合
+  - 块级+行内公式混合
+  - 空公式内容容错
+
+src/__tests__/testQuestionValidation.test.js (2026-06-15 新增)
+  弱模型畸形题目防御层校验测试（31 个用例）
+  - 状态词/判断词/知识点标签/题干-选项重复检测
+  - label 归一 (1/2/3/4/甲乙丙/A./(A) → A/B/C/D)
+  - normalizeQuestion 边界情况（true/false 映射、判断题题干自动补前缀、多选答案排序去重）
+  - validateQuestion 各题型分支（单选/多选/判断/填空）
+
+src/__tests__/testQuestionMultiCall.test.js (2026-06-15 新增)
+  弱模型多次小批量出题策略测试（30 个用例）
+  - isWeakModel 模型识别（lite/pro/128k 等）
+  - chunkCards 卡片批次拆分
+  - buildLitePromptByType 4 种题型 prompt 构建
+  - generateQuestionsForWeakModel 端到端（调用次数、容错、回调、prompt 差异化、AI 出题 / 校验拦截）
+
+src/__tests__/testQuestionMatrix.test.js (2026-06-15 新增)
+  本地题目矩阵分析测试（29 个用例）
+  - analyzeQuestionMatrix 基本功能（无题库 / 部分已有 / 满 MAX / cardId 缺失）
+  - byCardStems / needTypesByCard / totalByType 字段
+  - isBatchTypeSatisfied 跳过判定（全部出齐 / 部分出齐 / 无 cardId）
+  - formatExistingQuestionsForBatch prompt 段输出（空 / 部分 / 多道 stem 截断到 3 条）
+  - buildLitePromptByType 嵌入 matrix 段（暂无 / 已出齐 / matrix+existingQuestions 同时 / 4 题型位置一致）
+  - generateQuestionsForWeakModel 集成（短路 / 跳过任务 / 100 卡大规模 / matrix 字段 / 提示词含 c1 已有提示 / AI 返回重复题丢弃）
+
+src/components/ErrorBoundary.jsx (2026-06-13 新增)
+  应用级错误边界（类组件）
+  - 捕获子组件渲染阶段的未捕获异常
+  - 正常时: return this.props.children (透明)
+  - 错误时: 展示居中错误提示卡片（⚠️图标 + 错误消息 + 刷新/返回按钮）
+  - 日志: componentDidCatch → console.error
+  - 移动端适配: 按钮 minHeight = 44px, 支持 window.history.back()
+  → 定位: App.jsx L179 包裹整个 BrowserRouter + AppShell
+
+src/components/SplashScreen.jsx (2026-06-29 新增)
+  应用启动闪屏页（Splash Screen）
+  - 显示 3 秒固定时长，用于后台应用加载
+  - 简洁清爽风格：浅色渐变背景（#F8FAFC → #EFF6FF → #DBEAFE）+ 蓝色主色
+  - 内容: App 名称 "egg李" + Logo 图标（🥚 emoji，蓝色渐变圆角方块）+ 进度条
+  - 进度条使用 easeOutCubic 缓动曲线（前段快、后段慢）
+  - 3 秒后触发淡出动画（240ms），动画结束回调 onFinish
+  - 旋转环动画（splashSpin 1.1s linear infinite）
+  - 移动端小屏适配（max-width: 360px）和横屏适配（landscape + max-height: 480px）
+  - 支持 prefers-reduced-motion，禁用动画
+  Props: onFinish (回调函数，闪屏结束时触发)
+  → 定位: App.jsx L322-338 (showSplash state + 渲染)
+  → 定位: CSS → index.css L5288-5464 (.splash-* 类)
+
+src/components/MathText.jsx (2026-06-30 新增)
+  数学公式渲染组件（基于 KaTeX）
+  - 将含 LaTeX 公式的混合文本解析为文本段+公式段，分别渲染
+  - 行内公式 $...$ 内联渲染，块级公式 $$...$$ 居中独占一行（支持横向滚动）
+  - memo 优化避免重复渲染；公式解析失败时回退显示原始 $...$ 文本
+  - 公式段使用 katex.renderToString + dangerouslySetInnerHTML 渲染
+  - 选项: throwOnError=false, strict='ignore', trust=false（安全且容错）
+  Props: children(字符串), as(容器标签默认span), style, mathStyle
+  依赖: katex (^0.16.11), src/utils/mathText.js (parseMathText)
+  → 定位: CSS 引入 → main.jsx (import 'katex/dist/katex.min.css')
+  → 定位: 解析工具 → src/utils/mathText.js
+  → 用途: CardItem/TestCardItem/NewCardPreviewPanel/KnowledgePointConfirm 共用
+
+
+# ─────────── 四、服务层 (services/) ───────────
+
+src/services/db.js
+  Dexie.js IndexedDB 本地数据库
+  - 版本: v1 → v2 (新增 test_questions 表)
+  - 表: categories, units, cards, cardStatus, bookmarks, wrongAnswers, ocrCache, test_questions
+  - test_questions 表字段: id(自增), categoryId, unitId, sourceType('unit'|'category'|'review'|'wrong'), sourceId, cardId, created_at
+  - test_questions 操作函数: getTestQuestionsByUnit, getTestQuestionsByCategory, getTestQuestions(filter), getAllTestQuestionsByCategory, saveTestQuestions, removeTestQuestionsBySource, removeTestQuestionsBySourceType, getReviewQuestionsByUnit, getReviewQuestionsByCategory
+  - CRUD: 增删改查 分类/单元/卡片
+  - [2026-06-19 全面修复] setCardStatus(cardId, categoryId, status, { existingRecord, mode, chapterId }) 重构：
+      · 返回更新后的记录对象 { ...ex, ...update }（用于 handleMark 状态同步）
+      · ebbinghaus 模式：完整 SM-2 计算，保留原 userOverride 值 `ex.userOverride || false`
+      · sequential/active 模式 review：仅更新 status/updatedAt/reviewCount/mode/userOverride=true，不修改 SM-2 参数（隔离短期/长期计划）
+      · sequential/active 模式 mastered：仅更新 status，清除 userOverride
+      · sequential/active 模式 learning：仅更新 status，设置 userOverride=true
+      · weak 模式：保持既有 interval 缩短 / easeFactor 微增逻辑
+      · test 模式：只改 status/reviewCount；userOverride=true 时保护不被 mastered 覆盖
+  - [2026-06-19 全面修复] 移除轮数管理函数：incrementCategoryRound / decrementCategoryRound / getCategoryRound / setCategoryRound / getCategoryRoundsFromLocal
+  - 跨分类移动（任务 3）:
+      · batchCreateCategoriesAndUnits(categoriesData): 批量创建 AI 全权归类所需的新分类和新单元，返回 tempId → 实际 id 映射
+      · batchUpdateCardsCategoryAndUnit(): 批量更新 cards.categoryId/unitId，并同步 cardStatus、wrongAnswers、testQuestions、testRecords
+      · deleteEmptyUnit()/deleteEmptyUnits(): 删除空单元及其题目/记录/会话
+      · deleteEmptyCategory(): 分类无卡片时删除分类
+      · deleteCategory(): 完整级联删除分类关联的单元、卡片、题目、记录、错题、收藏等
+      · createDataSnapshot()/restoreDataSnapshot(): 为 3 秒撤销功能保存并恢复 categories/units/cards/cardStatus/bookmarks/wrongAnswers/testQuestions/testRecords/testSessions 完整快照
+  - 收藏: addBookmark, removeBookmark, isBookmarked, getBookmarkedCards
+  - 统计: getStatusStats, getCardCount, getBookmarkCount
+  - 今日统计: getTodayStudiedCount, getTodayStudiedCards
+  - 云端下载修复: repairCardRelationsAfterImport()，回填 cards.categoryId/unitId；无法匹配时创建「云端下载分类」「云端下载卡片」恢复入口
+  - 使用指南去重: deduplicateUsageGuide()（2026-06-17 新增），合并重复的「使用指南」分类（新设备种子数据 + 云端同步冲突），保留最早创建的，迁移卡片/单元/状态后删除重复
+  - UUID 迁移: migrateAllIdsToUuid (v2.19)
+  - [2026-06-15 补充] 未完成测试会话（断点续考）相关接口：
+      · addTestSession(session, userId): 新建会话，写入 questions/userAnswers/markedQuestions/currentIndex/elapsed/feedbackMap/answers/unitId/categoryId
+      · updateTestSession(id, patch): 增量更新，更新 updatedAt
+      · getUncompletedTestSession(testType, typeId, userId): 按 testType+typeId+userId 查 isCompleted=false 的最新一条
+      · getAllUnfinishedTestSessions(userId): 查该用户所有 isCompleted=false 会话，按 lastSavedAt 倒序，用于答题记录页
+      · getTestSession(id): 单条查询，用于答题记录页展开题目预览
+      · clearTestSessionAnswers(id): 重置 userAnswers/currentIndex/elapsed/feedbackMap/answers/startTime，保留 questions，用于"重新开始"
+      · deleteTestSession(id): 删除会话
+  → 定位: 添加单元+卡片事务 → addUnits L26-38
+  → 定位: 删除分类级联 → deleteCategory L22
+  → 定位: test_questions 表定义 → L25-27
+  → 定位: test_questions 操作函数 → L526-584
+  → 定位: 未完成会话接口 → L580-660
+  → 定位: setCardStatus 重构 → L820-940（含 SM-2 隔离与 userOverride 保护）
+  - [2026-07-04 新增] v13 升级：新增 drafts 表（悬浮窗快速录入草稿暂存）
+      · 字段: id, content, categoryId, chapterId, unitId, source('floating'|'manual'),
+              templateType, status('pending'|'generating'|'done'|'failed'),
+              retryCount, errorMessage, createdAt, generatedAt
+      · 索引: &id, categoryId, chapterId, unitId, status, retryCount, createdAt
+      · 仅本地 IndexedDB 暂存，不同步云端 SQL（无需更新云端 SQL 表）
+  - [2026-07-04 新增] Drafts 草稿 CRUD API（悬浮窗快速录入 Task 1）
+      · addDraft({ content, categoryId, chapterId, unitId, source, templateType }): 新建草稿，返回 draft 对象
+      · getPendingDrafts(): 获取所有待生成草稿（按 createdAt 升序）
+      · getPendingDraftsByCategory(categoryId): 获取指定分类下的待生成草稿
+      · getDraftById(id): 根据 ID 获取单条草稿（Task 2 draftService.js 依赖）
+      · getRecentDrafts(limit=3): 获取最近 N 条草稿（用于快速回忆条）
+      · getDraftCount(status?): 获取草稿总数（可按状态筛选）
+      · updateDraft(id, patch): 更新草稿
+      · deleteDraft(id): 删除草稿
+      · deleteDraftsByStatus(status): 批量删除草稿（按状态）
+      · addCardsToUnit(unitId, categoryId, cards) [Task 2 新增]: 向已有单元追加卡片（不创建新单元）
+        - cards 字段: { front, back, knowledge_point, type, options, answerBlank, chapterId }
+        - order 字段基于 db.cards.where('unitId').count() 现有数量累加
+        - 与 addUnits 区别: addUnits 总是创建新单元；addCardsToUnit 追加到已有单元
+  → 定位: v13 升级块（drafts 表） → db.js L316-346
+  → 定位: Drafts CRUD API → db.js L3592-3692（文件末尾）
+  → 定位: addCardsToUnit 函数 → db.js L3694-3725（deleteDraftsByStatus 之后）
+
+src/services/draftService.js (2026-07-04 新增，悬浮窗快速录入 Task 2)
+  草稿业务服务层（db.js Drafts CRUD + aiService.generateCards 的组合封装）
+  - saveDraft(params): 保存一条草稿（悬浮窗发送入口），校验 content/categoryId
+  - generateCardsFromDrafts(draftIds, aiConfig, onProgress): 批量生成草稿为卡片
+      · 每条草稿独立调用 generateCards，失败自动重试最多3次
+      · 3次仍失败 → status='failed' + errorMessage 记录原因
+      · draft.unitId 存在 → 追加到已有单元（addCardsToUnit）
+      · draft.unitId 为空 → 新建单元并写入卡片（addUnits），单元名取 content 前 20 字符
+      · onProgress 回调: (current, total, draftId, status, error) => void
+      · 返回: { total, success, failed, results: [{ id, status, error }] }
+  - retryDraft(draftId, aiConfig): 重试单条失败草稿
+  - getDraftStats(): 获取草稿统计（pending/failed/total，用于悬浮窗红点提示）
+  - parseAiContentToCards(aiContent, draft) [内部]: 解析 AI 返回为卡片数组
+      · 兼容 JSON 格式: { units: [{ cards }] } 或 { cards: [...] }
+      · 降级: 整段 AI 内容作为单张卡片 back
+  - extractUnitName(draft) [内部]: 从草稿前 20 字符提取单元名
+  - 重新导出 db.js Drafts CRUD: addDraft/getPendingDrafts/getPendingDraftsByCategory/
+    getRecentDrafts/getDraftCount/updateDraft/deleteDraft/deleteDraftsByStatus
+  - 依赖: db.js (addDraft/addUnits/addCardsToUnit 等), aiService.js (generateCards)
+  → 定位: saveDraft → draftService.js L21-29
+  → 定位: generateCardsFromDrafts → draftService.js L43-139
+  → 定位: parseAiContentToCards → draftService.js L146-178
+  → 定位: retryDraft → draftService.js L192-195
+  → 定位: getDraftStats → draftService.js L200-204
+
+src/services/supabase.js
+  Supabase 云端服务，约 420 行
+  - Client 懒初始化 + 缓存: getClient()
+  - Proxy 出口: 未配置时返回安全 fallback
+  - 配置管理: getEffectiveConfig (runtime > env > none)
+  - 连通检测: checkConnectivity(url, anonKey) → HTTP to /auth/v1/token
+  - 健康状态: getSupabaseHealthStatus() → 同步只读综合判断
+  - APK 启动期重试: isTransientSupabaseNetworkError + runSupabaseWithStartupRetry，只重试临时网络错误，不重试账号密码等业务错误
+  - 格式校验: isValidSupabaseUrl, isValidAnonKey, detectKeyType, isServiceRoleKey
+  - 认证: onAuthChange, getCurrentUser, signOut
+  → 定位: 配置优先级 → getEffectiveConfig L5-29
+  → 定位: 连通检测 → checkConnectivity L231-261
+  → 定位: 健康状态 → getSupabaseHealthStatus L264-288
+
+src/services/aiService.js (2026-06-13 新增分类Prompt修复 / 2026-06-19 重构跨分类 AI 全权归类 / 2026-06-19 P0修复 / 2026-06-23 Part1输出格式改为分组线性表 / 2026-06-23 同分类重整输出格式改为分组线性表)
+  统一 AI 服务路由 + 卡片分类
+  - cleanUpSpeechText(): 语音文本整理，按 AI 服务模式分发
+  - generateCards(): 卡片生成，按 AI 服务模式分发
+  - extractKnowledgePoints(): Step 1 从输入/OCR 文本提取原始知识点
+  - generateCardsFromKnowledgePoints(): Step 2 将确认后的知识点批量转为卡片
+  - extractTextFromImage(): 图片 OCR，按 AI 服务模式分发
+  - testAiConnection(): API 连接测试，按 AI 服务模式分发
+  - classifyCardsByCategoryContent(existingUnits, existingCards, newCards, config): 
+      新卡片归类到现有单元。AI 可用时通过 httpPost 直接发送纯净分类 prompt（不经过 generateCards，避免 CARD_GENERATION_PROMPT 污染），
+      AI 不可用时降级到本地关键词匹配 fallbackClassify。支持 DeepSeek/讯飞星火/火山引擎/千问 四种 AI 服务。
+      · mode: 'same-category-reorganize' → 同分类智能单元整理
+      · mode: 'cross-category-auto' → 跨分类 AI 全权归类，可创建最多 5 个新分类及其单元，返回三级结构方案
+  - classifyCrossCategoryAuto(existingUnits, existingCards, selectedCards, config, hasApi, classificationDepth, categoryPurpose):
+      跨分类 AI 全权归类主入口（2026-06-19 重构）
+      · chapter-and-unit / chapter-only 模式：调用 planCrossCategoryStructure + assignCardsCrossCategory 两步法
+        （AI 一次性决定 categories→chapters→units 结构，再由 AI 将卡片分配到该结构中，不再使用本地 clusterCardsByTopic 聚类）
+      · unit-only 模式：保持原有逻辑（单次 prompt 直接生成 categories→units→cards 结构）
+      · 失败时降级到 buildCrossCategoryFallback
+  - planCrossCategoryStructure(cards, config, options): 跨分类结构规划（2026-06-19 新增）
+      一次性 AI 调用，返回 categories→chapters→units 结构（不含卡片分配）
+      · 最多 5 个分类，每个分类 1-5 个章节，每个章节 1-5 个单元
+      · 分类名 ≤14 字，章节名 ≤12 字，单元名 ≤16 字
+      · 使用 parsePlanStructureResult 解析 JSON（已增强支持 categories 字段）
+  - assignCardsCrossCategory(cards, structure, config, options): 跨分类卡片分配（2026-06-19 新增）
+      将卡片分配到 AI 规划的多分类结构中
+      · AI 返回 cardIndices，转换为 cards 数组
+      · 未分配卡片自动放入"未归类"单元（第一个分类的第一个章节，或新建未归类分类）
+      · 使用 parsePlanStructureResult 解析 JSON
+  → 定位: 分类请求 classifyPromise → L161-205
+  → 定位: 降级分类 fallbackClassify → L264-294
+  → 定位: classifyCrossCategoryAuto → L6329-6377（chapter-and-unit/chapter-only 分支）/ L6379+（unit-only 分支）
+  → 定位: planCrossCategoryStructure → L7937-8056
+  → 定位: assignCardsCrossCategory → L8459-8636
+  → 定位: parsePlanStructureResult（增强支持 categories） → L7852-7872
+  → 定位: fixIncompleteJson（增强支持 categories） → L7896-7926
+  → 定位: parseLinearUnitResult（分组线性表解析，2026-06-23 新增） → L10191+
+  → 定位: parseLinearSameCategoryResult（同分类重整分组线性表解析，2026-06-23 新增） → L5569+
+  → 定位: classifySameCategoryReorganize（同分类重整，输出格式改为分组线性表，2026-06-23） → L6966+
+  → 定位: batchCreateUnits（Part1，输出格式改为分组线性表，2026-06-23） → L8008+
+  → 定位: [P0-2修复] fallbackClassify unitName 作用域 bug → L4284-4296（else if 分支重新定义 newUnitName）
+  → 定位: [P0-1已修复] convertAssignResultToValidateFormat → L8745（已接收 selectedCards 参数）
+  → 定位: [P0-1已修复] convertValidateFormatToAssignResult → L8807（已接收 selectedCards 参数）
+  → 定位: [P1-4修复] fixAssignmentResult 无 id 卡片去重 → L8926（使用 WeakSet 对象引用去重）
+  → 定位: [P1-5修复] generateCardsFromKnowledgePoints 单批路径注入 kpMarker → L937-944
+  → 定位: [P1-6修复] extractCardsFromBrokenJson 策略2补 kpMarker → L1594-1625
+  → 定位: [P1-8修复] checkCrossCategoryStructureConsistency + remapCardsToPlanStructure → L8505-8616
+  → 定位: [P1-8修复] assignCardsCrossCategory 结构一致性校验 → L8619-8650
+  → 定位: [P2-1修复] validateStructurePlan 放宽校验 → L8112-8192
+  → 定位: [P2-5修复] classifyCrossCategoryAuto categoryId 按名匹配 → L6371-6412
+  → 定位: [P2-7修复] parseSameCategoryResult 补 fixIncompleteJson → L6185-6214
+  → 定位: [P2-7修复] parseAssignCardsResult 补 fixIncompleteJson → L8875-8909
+  → 定位: [P2-2修复] mergeStructureBatches 主题分组合并 → L7745-7951（新增 UNIT_TOPIC_GROUP_KEYWORDS / getUnitTopicGroup / shareCommonKeyword）
+  → 定位: [P2-2修复] fixStructurePlan 单元数过多合并 → L8518-8654（新增主题分组合并逻辑）
+  → 定位: [P2-2修复] localFallbackAssign 语义相似度+关键词匹配 → L9117-9190
+  → 定位: [P2-2修复] classifySameCategoryReorganize chapter-only 展平 → L5812-5836
+  → 定位: [2026-06-21新增] planCrossCategoryStructureWithBatches 弱模型分批规划 → L8443
+  → 定位: [2026-06-21新增] mergeCrossCategoryBatches 批次结果合并（语义相似度0.3） → L8609
+  → 定位: [2026-06-21新增] assignCardsCrossCategoryWithBatches 弱模型分批分配 → L9570
+  → 定位: [2026-06-21新增] assignCardsByAssociation 关联检测fallback → L9820
+  → 定位: [2026-06-21新增] extractKeywordsForAssociation 关键词提取（2-6字滑窗） → L9893
+  → 定位: [2026-06-21新增] WEAK_CROSS_CATEGORY_BATCH_SIZE=20 / MAX_TOKENS_PER_BATCH=2500 → L8295
+  → 导入依赖: constants.js (API URLs) / httpClient.js (httpPost) / sparkAuth.js (讯飞认证)
+
+src/services/testQuestionService.js (2026-06-14 新增记录 / 2026-06-15 增强)
+  单元检测 AI 出题服务
+  - buildPrompt(): 按四级优先级构建 AI 提示词（未掌握 > 待掌握 > 学习中 > 已掌握）
+  - parseQuestionResponse(): 解析 AI 返回的 JSON 题目
+  - withRetry(): 指数退避重试
+  - classifyError(): 错误分类（超时/限流/格式错误）
+  - 去重: simpleTextSimilarity 词级 Jaccard 相似度 (SIMILARITY_THRESHOLD=0.85)
+  - 每个知识点出题上限: 单元检测 3 道 / 分类检测 2 道
+  → 定位: AI优先级分组 → buildPrompt L63-86
+
+  [2026-06-15 新增] 弱模型（讯飞星火 Spark Lite）畸形题目防御层
+  - FORBIDDEN_STATUS_WORDS / FORBIDDEN_JUDGMENT_WORDS: 状态词/判断词黑名单（待掌握、未掌握、正确、错误、对、错等）
+  - KNOWLEDGE_LABEL_PATTERNS: 知识点标签特征正则（如 "X 的特点/定义/分类"）
+  - isKnowledgeLabel(): 检测选项 text 是否是知识点标签
+  - normalizeChoiceLabel(): 把 1/2/3/4、甲乙丙丁、a/b/c/d、(A)/A./A、 统一归一为 A/B/C/D
+  - tokenizeForCompare() + jaccardSimilarity(): 中文 bigram + 空格 token 混合分词，用于题干-选项/选项-选项冗余检测
+  - normalizeQuestion(): 自动修正（字符串数组 options → 对象数组；小写 label → 大写；true/false → 正确/错误；判断题题干补"判断以下说法是否正确："前缀；多选答案排序去重）
+  - validateQuestion(): 多层校验（label 必须是 A-Z；text 排除判断词/状态词/知识点标签/过短/纯数字；题干必须含问号或疑问词；题干不能是知识点标签；选项之间不能高度相似；题干与选项不能高度相似）
+  → 定位: 防御常量 → L165-187；归一化与校验函数 → L194-550；测试导出 → 末尾 __test__ 对象
+
+  [2026-06-15 重大重构] 弱模型多次小批量出题策略（multi-call architecture）
+  背景：单次大批量 prompt 让弱模型（Spark Lite）依然产出畸形题目
+  策略：检测到弱模型时，按"题型 × 卡片批次"多次串行调用，每次只生成 1 种题型、≤5 张卡片
+  新增函数：
+  - isWeakModel(config): 检测 config.aiServiceMode === 'iflytek-spark' && sparkModel === 'lite'
+  - chunkCards(cards, batchSize): 卡片按 LITE_BATCH_SIZE=5 拆批
+  - formatCardsForLiteBatch(cards, textLimit=80): 卡片信息精简格式化（id/知识点/问题/答案）
+  - buildLitePromptByType(cardBatch, type, existingQuestions): 单题型精简 prompt 构建
+  - generateQuestionsForWeakModel(cards, statusMap, existingQuestions, testType, config, options):
+      - 按状态优先级排序（new > review > learning > mastered）
+      - 拆批 + 前 2 批 4 种题型全出，后续批降级为单选+判断
+      - 串行调用（避免触发限流），并行可通过 options.parallel=true 开启
+      - 每批：buildLitePromptByType → withRetry(generateTestQuestions) → parseQuestionResponse → 强制 type 字段 → normalizeQuestion → validateQuestion
+      - 容错：单批失败不中断其它批；onBatchComplete 回调实时进度
+      - 汇总：合并所有结果，按 stem 文本相似度去重
+      - 返回 { questions, totalGenerated, batchCount, callCount, successCount, failedCount }
+  在 updateQuestionBank 中分流：
+    if (isWeakModel(config)) → 走 generateQuestionsForWeakModel
+    else → 走单次大批量原逻辑（保持兼容）
+  → 定位: isWeakModel → L240；generateQuestionsForWeakModel → L290-380；updateQuestionBank 分流 → L900-960
+
+  [2026-06-15 新增] LITE 简化版单题型 prompt 模板（constants.js）
+  - LITE_COMMON_RULES: 5 条通用硬约束（label/text/标签/状态词/输出格式）
+  - TEST_QUESTION_LITE_SINGLE: 单选题模板（含正反例、4 选项约束）
+  - TEST_QUESTION_LITE_MULTI: 多选题模板（含"多选题"标记要求、答案格式要求）
+  - TEST_QUESTION_LITE_TRUE_FALSE: 判断题模板（label 固定"正确/错误"、answer 必须中文）
+  - TEST_QUESTION_LITE_FILL: 填空题模板（必须含 ____ 标记、options=[]）
+  - LITE_QUESTION_TYPES: 4 种题型元数据数组
+  - LITE_BATCH_SIZE = 5: 单批卡片数上限
+  → 定位: constants.js L448-570
+  → 定位: 提示词构建 → L99-113
+
+  [2026-06-15 重大升级] 本地题目矩阵分析（避免重复出题）
+  背景：分类检测卡片数可达 100+，本地题库可能已含部分 (cardId × type) 组合
+       直接全部让 AI 出题会：① 重复出题 ② token 浪费 ③ 题目"撞车"概率升高
+  核心思路：先用本地题库构建"题目矩阵"，决定每个 (card, type) 还需要不需要生成
+            再按矩阵过滤任务清单 + 把"已有题目"段嵌入 prompt
+  新增函数：
+  - MAX_QUESTIONS_PER_CARD_TYPE = 1（每张卡每种题型出齐上限）
+  - analyzeQuestionMatrix(cards, existingQuestions):
+      返回 { byCardType, byCardStems, needTypesByCard, totalByType, totalCount }
+      · byCardType: Map<cardId, { type: count }>  统计每张卡每种题型已有几道
+      · byCardStems: Map<cardId, { type: [stems] }>  每张卡每种题型的 stem 列表（用于 prompt 嵌入）
+      · needTypesByCard: Map<cardId, [type, ...]>  该卡还缺哪些 type
+      · totalByType / totalCount: 总体统计
+  - isBatchTypeSatisfied(cardBatch, type, matrix):
+      batch 内所有 card 都已出齐该 type 时返回 true（用于跳过任务）
+  - formatExistingQuestionsForBatch(cardBatch, matrix, type):
+      把 batch 内已有该 type 题的卡格式化为 prompt 段，告知 AI "该卡已有 X 道，不要再出"
+  - buildLitePromptByType(cardBatch, type, options) 签名升级为 { existingQuestions, matrix }：
+      · 优先使用 matrix 输出"按卡片精确提示"段（明确告诉 AI "c1 已有 single_choice 题"）
+      · 再追加"全局参考"段（用 existingQuestions 取该题型前 5 条）
+      · 都为空时显示"暂无已有同类题"段
+      · 嵌入位置：模板末尾"只返回 JSON 数组。"前
+  - generateQuestionsForWeakModel 增强：
+      · 拆批前先 analyzeQuestionMatrix 构造题目矩阵
+      · 短路返回：所有 (card, type) 都已出齐时 callCount=0 + skippedReason='all_satisfied'
+      · 任务过滤：每个 (batch, type) 任务先用 isBatchTypeSatisfied 跳过
+      · 单题冲突检测：AI 返回的题若 cardId×type 已达 MAX，直接丢弃
+      · 返回结果增加 { matrix, skippedTasks: { byType: { single_choice: N, ... } } }
+  实战效果（100 张卡片 + 80 张已有 single_choice/true_false 的本地题库）：
+      原方案：100/5 × 4 题型 = 80 次调用
+      新方案：20 批 × 平均 0.6 题型 = 12 次调用（跳过 32 个已出齐任务）
+      调用次数减少 ~85%
+  → 定位: analyzeQuestionMatrix → L286；isBatchTypeSatisfied → L332；
+         formatExistingQuestionsForBatch → L343；buildLitePromptByType → L199；generateQuestionsForWeakModel → L377
+  → 测试: src/__tests__/testQuestionMatrix.test.js（29 个用例：matrix 分析 / 任务跳过 / 短路返回 / 单题冲突 / 100 卡大规模场景）
+
+  [2026-06-15 任务8 新增] 强模型省 token 出题策略（与弱模型共用 matrix）
+  背景：强模型（DeepSeek/讯飞星火 Pro/豆包/千问）原 1 次大批量 prompt token 浪费；
+        复用 analyzeQuestionMatrix 构造题目矩阵，按"题型组合"分批
+  策略：
+    - batchSize: 12-15 张/批（按模型档位，DeepSeek/豆包/千问 15 张，Spark Pro 12 张）
+    - maxTypesPerBatch: 2 个题型组合
+    - 题型组合：objective (single_choice+multi_choice) + binary (true_false+fill_blank)
+    - 复用 matrix：跳过"已出齐"的 (batch, type) 任务
+    - 单题冲突检测：AI 返回的题若 cardId×type 已达 MAX，直接丢弃
+  新增函数：
+    - isStrongModel(config): 检测强模型（DeepSeek/讯飞星火 Pro/豆包/千问）
+    - buildStrongModelTasks(matrix, cards, strategy): 按矩阵 + 题型组合拆任务
+    - buildStrongModelPrompt(cardBatch, types, options): 多题型精简 prompt
+    - parseMultiTypeResponse(raw, types): 兼容对象/数组两种返回格式
+    - generateQuestionsForStrongModel(...): 主流程
+    - runLegacySingleBatch(...): 降级路径（原单次大批量）
+    - tryGenerateWithWeakModel(...): 弱模型封装（带进度 Toast）
+  updateQuestionBank 三路分流：
+    if (isWeakModel) → tryGenerateWithWeakModel
+    else if (isStrongModel) → generateQuestionsForStrongModel（失败时自动降级到 runLegacySingleBatch）
+    else → runLegacySingleBatch（原逻辑，兼容/降级）
+  实战效果（30 张卡 + 60% 本地题库）：
+    原方案：1 次 prompt（~3000 token）
+    新方案：4 次 prompt（每批 ~800 token，总 ~3200 token，token 减少 20%）
+    调用次数从 1 → 4（但可接受，单次失败可重试）
+  → 定位: isStrongModel → L194；buildStrongModelTasks → L420；buildStrongModelPrompt → L470；
+         parseMultiTypeResponse → L545；generateQuestionsForStrongModel → L600；
+         runLegacySingleBatch/tryGenerateWithWeakModel → L1396/L1358
+  → 测试: src/__tests__/testQuestionStrongModel.test.js（36 个用例：isStrongModel / buildStrongModelTasks / buildStrongModelPrompt / parseMultiTypeResponse / generateQuestionsForStrongModel / 端到端集成）
+
+src/services/deepseek.js
+  DeepSeek AI API 封装
+  - generateCards(text, summaryLevel, apiKey, model): 文本 → JSON 卡片
+  - extractTextFromImage(file, apiKey, model): 图片 OCR 提取文字
+  - cleanUpSpeechText(text, apiKey, model): 语音文本 AI 整理
+  - testApiConnection(apiKey): 测试 API Key 有效性
+  API: POST https://api.deepseek.com/chat/completions
+
+src/services/volcanoEngine.js
+  火山引擎豆包大模型（Ark API）封装（v3.7 新增）
+  - generateCardsWithVolcano(text, apiKey, model, summaryLevel)
+  - cleanUpSpeechTextWithVolcano(rawText, apiKey, model)
+  - extractTextFromImageWithVolcano(base64Image, apiKey, model)
+  - testVolcanoConnection(apiKey, model): 测试连接
+  API: POST https://ark.cn-beijing.volces.com/api/v3/chat/completions（OpenAI 兼容格式，国内直连）
+
+src/services/speech.js
+  浏览器 Web Speech API 封装
+  - isSpeechSupported(): 检测浏览器是否支持
+  - startSpeechRecognition(onResult, onStatus): 返回识别实例
+  - Capacitor 原生语音兜底 (voiceRecognition)
+
+src/services/recorder.js
+  MediaRecorder 音频录制服务
+  - startRecording(options, onStatus): 返回 { stop, cancel }
+  - 支持 web-speech / whisper-api / whisper-wasm 三种方案
+  - whisper 方案: 录音为 WAV blob → 传递给 transcribe.js
+
+src/services/transcribe.js
+  Whisper 语音转文字
+  - transcribeWithWhisperAPI(audioBlob, url, apiKey): 在线 API POST
+  - WASM 离线方案（实验性，未完成集成）
+
+src/services/sync.js
+  Supabase 数据双向同步
+  - syncToSupabase(): 本地上传到云端；失败时按网络/超时类型进入自动重试队列
+  - retryPendingSyncs(): 网络恢复或延迟触发后重试失败的本地推送
+  - syncFromSupabase(): 云端下载到本地
+  - camelCase ↔ snake_case 字段名映射
+  - pullFromCloud() / pullTableFromCloud(categories/units/cards) 下载后调用 repairCardRelationsAfterImport，避免卡片只在账号页计数、记录页/背诵页不可见
+  - [2026-06-19 全面修复] pullFromCloud cardStatus 合并策略：
+      · 移除 `db.cardStatus.clear()`，改为基于 updatedAt 合并
+      · 云端下载的 statusConverted 仅含 ebbinghaus 模式（云端只存储 ebbinghaus）
+      · 本地非 ebbinghaus 记录保留不变；同名 cardId 按 updatedAt 取较新者
+      · 冲突解决：cloudUpdated > localUpdated 时更新本地，否则跳过（保留本地较新记录）
+      · 合并日志：`[sync] cardStatus 合并完成: 更新 N 条, 新增 N 条, 跳过 N 条（本地较新）`
+      · 解决多设备 SM-2 冲突，避免本地短期计划记录被云端覆盖
+  - [2026-06-19 全面修复] 移除 round_count 字段的 push/pull 逻辑（废弃轮数管理）
+  → 定位: pullFromCloud → L486+
+  → 定位: cardStatus 合并策略 → L555-617
+
+src/services/settingsSync.js (2026-06-19 扩展为 25 个字段全量同步; 2026-07-04 H9 安全加固)
+  用户设置的云端同步服务
+  - SYNCED_SETTING_KEYS: 同步字段白名单（H9: 已移除所有敏感 API Key/Secret/Token 字段）
+    · 已移除: apiKey, speechApiKey, iflytekApiSecret, iflytekSparkApiKey, iflytekSparkApiSecret,
+      whisperApiKey, iflytekIatApiKey, iflytekIatApiSecret, volcanoApiKey, dashscopeApiKey,
+      paddleocrApiToken, baiduOcrApiKey, baiduOcrSecretKey
+  - SENSITIVE_SETTING_KEYS: 敏感字段黑名单，遇到主动 delete
+  - fetchCloudSettingsStructured(supabase): 结构化拉取云端设置
+  - saveCloudSettingsStructured(supabase, settingsData): 结构化保存（Read-Modify-Write 合并）
+    · H9: 主动清理云端历史遗留的敏感字段（removedSensitiveCount 计数）
+  - extractSettingsForApp(cloudSettings): 提取字段供 app 使用
+
+src/services/migrate.js
+  本地 DB ↔ Supabase 数据迁移
+  - migrateFromLocalToSupabase(userId): 导出本地数据到云端
+  - migrateFromSupabaseToLocal(): 从云端拉取数据覆盖本地
+
+
+# ─────────── 五、全局状态 (context/) ───────────
+
+src/context/AppContext.jsx (2026-06-19 新增 ocrAutoGenerate / aiDebugPanel 状态; 2026-07-04 H2+M3+H6 admin 密码加固)
+  React Context 全局状态管理，约 380 行
+  State (initialState L19-L33):
+  - categories, apiKey, model, fontSize, eyeProtection
+  - speechMode, speechApiUrl, speechApiKey
+  - inputBarMode (新增: fixed/floating)
+  - isLoggedIn, user, toast
+  - aiDebugPanel: AI 调试面板开关（开发者模式可用，localStorage 'app_ai_debug_panel'）
+  - ocrAutoGenerate: OCR 自动生成卡片开关（localStorage STORAGE_KEYS.OCR_AUTO_GENERATE，支持云端同步）
+  Reducer (L35-100+): 支持 15+ 种 action type，含 SET_AI_DEBUG_PANEL / SET_OCR_AUTO_GENERATE
+  全局 useEffect (L126-199):
+  - 登录初始化: 检查 forcedLocal → Supabase session → 本地 session
+  - 启动时自动 checkConnectivity (L153)
+  - loadCategories() 中执行 ensureDbReady + repairCardRelationsAfterImport + deduplicateUsageGuide，修复历史已下载的孤立卡片并清理重复「使用指南」
+  提供的 actions (useCallback 包裹):
+  - setApiKey, setModel, setFontSize, setEyeProtection
+  - setSpeechMode, setSpeechApiUrl, setSpeechApiKey
+  - setInputBarMode (新增)
+  - setLogin, logout, setCategories, showToast, hideToast
+  - setAiDebugPanel, setOcrAutoGenerate (2026-06-19 新增)
+  - 管理员密码: hasAdminPassword, setAdminPassword, verifyAdminPassword
+    · H2+M3 (2026-07-04): PBKDF2(100000 次迭代 + SHA-256 + 随机 salt) 替代 SHA-256
+    · 兼容旧版 SHA-256 哈希（64 位 hex），verifyAdminPassword 自动升级到 PBKDF2
+    · constantTimeEqual() 常量时间比较防时序攻击
+    · generateSalt() 生成 16 字节随机 salt
+  - Supabase 运行时配置: get/set/clearRuntimeSupabaseConfig
+    · H6 (2026-07-04): setRuntimeSupabaseConfig 改为 async 函数
+    · 签名变为 async (url, anonKey, adminPassword) → { success, error?, requireAdminPassword? }
+    · 已设 admin 密码时，必须传入正确 adminPassword 才能修改 Supabase URL/anonKey
+  → 定位: 登录初始化 → L126-199
+  → 定位: 启动连通检测 → L153
+  → 定位: 管理员密码 PBKDF2 → pbkdf2Hash / setAdminPassword / verifyAdminPassword
+  → 定位: 运行时配置 → L308-327
+  → 定位: ocrAutoGenerate / aiDebugPanel → initialState + reducer + setOcrAutoGenerate/setAiDebugPanel
+
+
+# ─────────── 六、工具与配置 (utils/) ───────────
+
+src/utils/constants.js
+  常量定义，约 120 行
+  - DB_NAME: 'AIFlashCardsDB'
+  - MODELS: DeepSeek-V3 / DeepSeek-R1
+  - SPEECH_MODES: web-speech / whisper-api / whisper-wasm
+  - SUMMARY_LEVELS: 精简 / 标准 / 详细
+  - STORAGE_KEYS: 所有 localStorage key 常量 (16 个)
+  - CARD_GENERATION_PROMPT_BY_LEVEL: concise/standard/detailed 三套 prompt
+  - OCR_PROMPT + SPEECH_CLEANUP_SYSTEM_PROMPT
+  - [2026-06-30 新增] LaTeX 公式处理规则已注入 5 个 AI prompt:
+      · buildPrompt (rule 7) / buildBatchCardsPromptCore (rule 11)
+      · KNOWLEDGE_POINT_EXTRACTION_PROMPT (rule 8) / KNOWLEDGE_POINT_EXTRACTION_PROMPT_WEAK (rule 6)
+      · buildRegenerateCardPrompt (rule 6)
+      · 规则要点: 原文公式完整保留 + 统一 LaTeX 输出（行内$...$/块级$$...$$）+ 普通符号转 LaTeX（x²→$x^2$, √2→$\sqrt{2}$）
+
+src/utils/helpers.js
+  工具函数集
+  - generateId(): UUID v4（[P3-3] 优先使用 crypto.randomUUID，回退到 Date.now+Math.random 兼容旧环境）
+  - formatTime(date): 时间格式化
+  - compressImage(file): 图片压缩（用于 OCR）
+  - parseAIResponse(text): 从 AI 返回中提取 JSON
+  - sha256(input): SHA-256 哈希（用于管理员密码）
+
+src/utils/mathText.js (2026-06-30 新增)
+  数学公式文本解析工具（MathText 组件配套）
+  - parseMathText(text): 将混合文本解析为段数组 [{type, content}]
+  - 段类型: 'text'(普通文本) | 'inline-math'(行内公式) | 'block-math'(块级公式)
+  - 支持 \$ 转义（显示字面量 $ 而不解析为公式）
+  - 容错: 未闭合的 $ 当作普通文本处理，不抛错
+  - 边界: 空字符串/非字符串输入返回 []
+  → 测试: src/__tests__/mathText.test.js (10 个用例全覆盖)
+  → 用途: MathText.jsx 调用此函数拆分文本再分别渲染
+
+src/utils/seedData.js
+  首次使用引导数据（v2 版本，2026-06-17 更新；2026-07-14 新增数据导入导出章节）
+  - seedUsageGuide(): 创建 6 个章节、12 个单元、47 张卡片（分类→章节→单元→卡片 四级结构）
+  - 章节：基础入门 / AI 功能 / 录入方式 / 学习与检测 / 数据导入导出 / 数据管理
+  - 覆盖全部功能模块：快速入门/AI智能生成/语音录入/图片识别/背诵学习/单元检测/全局导入导出/章节级导入导出/单元级导入导出/导入导出注意事项/错题本与题库/云端同步
+  - 种子版本 key: seed_usage_guide_v2（升级后可重新触发新用户引导）
+
+src/utils/excelParser.js
+  Excel 文件解析与模板生成工具
+  - parseExcelFile(file): 解析 Excel 文件，支持模板格式（含提示行+表头）和简单格式（无表头）
+    · 简单模式下自动检测问题列前一列是否为单元列（通过关键词匹配或长度分析）
+    · 识别表头关键词：单元/unit/章节/chapter/分类/category
+    · 通过列长度对比（第0列平均长度 < 第1列的60%且<20字符）自动判断单元列
+  - generateExcelTemplate(): 生成卡片导入模板（含分类/章节/单元/问题/答案/知识点列）
+  - exportUnitCardsToExcel(cards, unitInfo): 导出单元卡片数据
+  - exportChapterCardsToExcel(cards, chapterInfo): 导出章节卡片数据（含单元列）
+  - generateChapterTemplate(chapterInfo): 生成章节导入模板（含单元列）
+  - generateUnitTemplate(unitInfo): 生成单元导入模板
+
+scripts/test-classification-standalone.js (2026-06-20 新增)
+  弱模型（讯飞 Spark Lite）独立测试脚本（Node.js）
+  - 直接调用 Spark Lite API，不依赖浏览器环境
+  - 包含 TOPIC_GROUP_KEYWORDS 主题分组关键词（用于单元合并）
+  - 包含 KEYWORD_MAP 关键词匹配（用于卡片分配，97.5%准确率）
+  - postProcessStructure(): 后处理合并相似单元（主题分组+语义相似度）
+  - 测试三种模式：chapter-and-unit / chapter-only / unit-only
+
+scripts/test-classification-strong-model.js (2026-06-20 新增)
+  强模型（阿里云千问 Qwen-Plus）独立测试脚本（Node.js）
+  - 直接调用 DashScope API，验证强模型分类正确性
+  - 使用与弱模型相同的关键词匹配策略和后处理
+  - 测试结果：97.5-100% 准确率，所有模式通过
+
+scripts/test-cross-category-standalone.mjs (2026-06-21 新增)
+  跨分类归类逻辑独立测试脚本（Node.js，无需浏览器）
+  - 5个测试：基础分类/打乱分类/5轮稳定性/关联检测/无关联处理
+  - 使用最长匹配优先关键词分类器
+  - 测试结果：5/5 全部通过，分类准确率100%，单元准确率93.3%
+
+scripts/test-cross-category-v2.mjs (2026-06-21 新增)
+  跨分类归类真实数据测试脚本（Node.js，无需浏览器）
+  - 90张真实卡片（计算机基础40 + 高等数学50）
+  - 6个测试：基础分类/打乱分类/5轮稳定性/随机抽取30张/关联检测/跨分类混合30张
+  - 使用层级映射约束的关键词分类器（CATEGORY_CHAPTERS + CHAPTER_UNITS）
+  - 测试结果：6/6 全部通过，分类准确率100%，单元准确率97.8%
+
+scripts/test-cross-category-ai.mjs (2026-06-21 新增)
+  跨分类归类 AI 真实分类测试脚本（Node.js，直接调用 Spark Lite API）
+  - 90张真实卡片（计算机基础40 + 高等数学50）
+  - 直接调用讯飞 Spark Lite API，不依赖硬编码关键词
+  - 两步法：planCrossCategoryStructure + assignCardsCrossCategory
+  - 分批处理（每批40张）+ 截断JSON修复
+  - 测试结果：分类覆盖率52.2%，分类准确率44.4%（Spark Lite 弱模型能力有限）
+  - 用途：验证 AI 语义分类能力，对比本地关键词分类
+
+scripts/test-knowledge-classification-strong.mjs (2026-06-21 新增)
+  强模型指定分类归类功能独立测试脚本（Node.js，直接调用 DashScope API）
+  - 测试 classifyCardsByExpectedUnits 函数的分类准确率
+  - 180 个知识点，覆盖 8 章 18 单元
+  - 通过标准（强模型）：章节准确率 ≥85%，单元准确率 ≥90%
+  - 测试结果：章节准确率 96%，单元准确率 99%，总体通过
+  - 最终成功逻辑（已应用到 aiService.js 的 classifyCardsByExpectedUnits 函数）：
+    1. 一次性分类（batchSize = cards.length，不分批）：强模型一次性分类所有卡片，保持上下文一致性
+    2. 优化后的 prompt：
+       - 包含"分类步骤"（4步）
+       - 包含"单元主题分析原则"（帮助 AI 理解单元名的完整语义）
+       - 包含"区分名称相似单元的关键原则"（6条原则）
+       - 包含"分类示例"（6个示例）
+       - 包含"输出要求"和"注意事项"（11条）
+    3. 禁用两步分类法（测试发现会降低准确率，第一步章节分类错误会传播）
+    4. 禁用置信度检测（测试发现会降低准确率，把字符编码错误地改到"多媒体信息编码"单元）
+    5. 修复测试数据：将"十六进制常用标识"和"二进制运算基础规则"从"数据结构与多媒体信息编码"移到"计算机数制与信息编码"
+  - 用途：验证强模型指定分类归类功能，优化 prompt 和算法
+
+
+# ─────────── 七、配置文件 ───────────
+
+.env (项目根目录)
+  - VITE_SUPABASE_URL: Supabase 项目 URL
+  - VITE_SUPABASE_ANON_KEY: Supabase anon/public key
+  - VITE_ADMIN_PASSWORD_HASH: 管理员密码 SHA256 哈希（可选，注释掉）
+
+.env.example (项目根目录)
+  环境变量模板，含详细注释
+
+.gitignore
+  .env / .env.* 已忽略，.env.example 已放行
+
+android/gradle.properties
+  Gradle 全局属性配置
+  - android.builtInKotlin=false + android.newDsl=false (AGP 9.x 弃用但保留，Capacitor 插件仍需旧 DSL，AGP 10.0 后需升级 Capacitor)
+  - org.gradle.jvmargs=-Xmx1536m, android.useAndroidX=true
+  - compileSdkVersion=36, minSdkVersion=24, targetSdkVersion=36
+
+android/build.gradle
+  顶层 Android 构建脚本
+  - AGP 9.2.1, kotlin-gradle-plugin 2.0.20, google services 4.4.4
+  - gradle.beforeProject 钩子：强制所有子项目使用统一的 AGP 9.2.1 / Kotlin 2.0.20（解决 Capacitor 插件内部声明旧版本冲突）
+  - subprojects afterEvaluate: 强制 Java 21 字节码目标 + JDK 26 编译器，Kotlin jvmTarget=21
+
+android/app/build.gradle
+  APP 模块构建脚本
+  - namespace=com.eggli.flashcards, compileSdk=36, defaultConfig (versionCode: 2, versionName: "2.0")
+  - repositories: google() + mavenCentral() (已移除 flatDir，无 jar 依赖)
+  - dependencies: androidx.appcompat / coordinatorlayout / core-splashscreen + project(:capacitor-android) + project(:capacitor-cordova-android-plugins)
+
+android/app/src/main/java/com/eggli/flashcards/MainActivity.java
+  主入口 Activity (继承 BridgeActivity)
+  - 注册 AudioRecorderPlugin, FilesystemPlugin（已移除缺失的 HttpPlugin 引用）
+
+android/capacitor-cordova-android-plugins/build.gradle
+  Capacitor Cordova 插件聚合构建脚本
+  - 内部声明 classpath AGP 8.13.0（由根 build.gradle 的 beforeProject 强制升级到 9.2.1）
+  - repositories: google() + mavenCentral() (已移除 flatDir，无 jar 依赖)
+  - dependencies: androidx.appcompat + org.apache.cordova:framework
+
+android/settings.gradle
+  Gradle 设置文件，声明子模块 (app, capacitor-cordova-android-plugins)
+  包含 capacitor.settings.gradle (Capacitor 自动生成，勿手动编辑)
+
+android/variables.gradle
+  变量配置文件，定义 minSdkVersion/compileSdkVersion/targetSdkVersion/AndroidX 版本
+
+android/app/capacitor.build.gradle
+  Capacitor 自动生成文件，编译选项 sourceCompatibility/targetCompatibility=Java 21
+
+capacitor.config.json
+  appName: "egg李2.04"
+  - 生产打包模式：不要配置 server.url，构建后执行 npm run build; npm run cap:sync
+  - 热更新调试模式：如需连接 dev server，可临时在 server 中加入 url（例如 http://局域网IP:5173），发布前必须删除
+  - 2026-06-15 热更新调试：当前 WLAN 地址为 http://192.168.0.102:5173，已写入 server.url 并执行 npm run cap:sync
+  - 安全加固（2026-07-04 H7）: allowMixedContent 改为 false（禁止混合内容）
+
+android/app/src/main/AndroidManifest.xml
+  - 2026-07-04 H7: android:usesCleartextTraffic 改为 false（禁止明文流量）
+  - 2026-07-04 Task 14 系统悬浮窗权限与服务声明:
+    · 新增权限: android.permission.SYSTEM_ALERT_WINDOW（位于 Permissions 块，FOREGROUND_SERVICE_VPN 之后）
+    · 新增服务: .services.SystemFloatingWindowService（位于 TailscaleVpnService 之后）
+      - exported="false"
+      - foregroundServiceType="specialUse"
+      - property android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE = "floating_window_quick_input"
+    · 注意: 未添加 FOREGROUND_SERVICE_SPECIAL_USE 权限（Android 14+ specialUse 类型可能需要，待 Task 17 后验证）
+
+android/app/src/main/java/com/eggli/flashcards/services/SystemFloatingWindowService.kt (2026-07-04 新增，悬浮窗快速录入 Task 15)
+  系统级悬浮窗前台服务（在其他应用上方显示悬浮窗）
+  - 包名: com.eggli.flashcards.services
+  - 继承: android.app.Service
+  - 通知配置:
+    · NOTIFICATION_ID = 2（避免与 TailscaleVpnService 通知 ID 冲突）
+    · CHANNEL_ID = "system_floating_window"，CHANNEL_NAME = "系统悬浮窗"
+    · IMPORTANCE_LOW，无振动，无角标
+    · 通知文案: "快速录入已开启" / "点击其他应用的悬浮窗录入知识点"
+  - Companion 静态方法:
+    · isShowing(): 查询悬浮窗显示状态
+    · canDrawOverlays(context): 检查 SYSTEM_ALERT_WINDOW 权限（Android 6.0+）
+    · startService(context): 启动前台服务（Android 8.0+ 用 startForegroundService）
+    · stopService(context): 停止服务
+  - 悬浮窗实现:
+    · WindowManager + WebView 方案（加载 file:///android_asset/public/floating-window.html）
+    · 尺寸: 280dp × 480dp（TypedValue.applyDimension 转 px）
+    · TYPE_APPLICATION_OVERLAY（Android 8.0+）/ TYPE_PHONE（旧版本）
+    · FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_NO_LIMITS | FLAG_HARDWARE_ACCELERATED
+    · 初始位置: Gravity.END | CENTER_VERTICAL（屏幕右侧居中）
+    · WebView 设置: javaScriptEnabled, domStorageEnabled, allowFileAccess, allowContentAccess, 透明背景
+  - 拖拽实现 (setupDragListener):
+    · ACTION_DOWN 记录初始坐标
+    · ACTION_MOVE 位移 > 10px 触发拖拽，更新 params.x/y
+    · ACTION_UP 未拖动时返回 false 交给 WebView 处理点击
+  - 生命周期:
+    · onCreate → createNotificationChannel
+    · onStartCommand → startForeground + showFloatingWindow，返回 START_STICKY
+    · onDestroy → hideFloatingWindow（removeView + webView.destroy）
+  - toggleVisibility(): 切换显示/隐藏（供 JS Bridge 调用）
+  - 依赖文件: floating-window.html（Task 17 待创建，当前 loadUrl 会失败）
+  → 定位: 通知渠道 → createNotificationChannel L78-92
+  → 定位: 通知构建 → createNotification L94-101
+  → 定位: 悬浮窗显示 → showFloatingWindow L103-157
+  → 定位: 拖拽监听 → setupDragListener L159-194
+  → 定位: 悬浮窗隐藏 → hideFloatingWindow L196-204
+  → 定位: 静态启动方法 → companion object L25-58
+
+android/app/src/main/res/xml/network_security_config.xml
+  - 2026-07-04 H7 重写:
+    · base-config cleartextTrafficPermitted="false"（默认禁止明文）
+    · 仅在 debug-overrides 中保留 <certificates src="user" />（debug 模式信任用户证书）
+    · domain-config 域名白名单: includeSubdomains="false" 收紧范围
+    · 仅允许 cloudbase/supabase/aliyuncs/deepseek/xf-yun/volces 等已知 API 域名的明文（实际都是 https，配置仅作兜底）
+
+index.html
+  - 2026-07-04 H13: 添加 CSP（内容安全策略）meta 标签
+    · default-src 'self' 'unsafe-inline' data: blob:
+    · connect-src 严格白名单（仅允许已知的 AI/CloudBase/Supabase API 域名）
+    · img-src 'self' data: blob: https:
+    · media-src 'self' blob: data:
+    · frame-ancestors 'none'（防点击劫持）
+  - format-detection telephone=no（禁用电话号码自动检测）
+
+android/app/build.gradle
+  - 2026-07-04 H5: 移除硬编码 signingPassword "test1234"
+    · 改用 keystore.properties 文件读取（位于项目根目录，已加入 .gitignore）
+    · 文件不存在时回退到环境变量 RELEASE_STORE_FILE / RELEASE_STORE_PASSWORD / RELEASE_KEY_ALIAS / RELEASE_KEY_PASSWORD
+    · 环境变量也未设置时使用空字符串（debug 构建）
+  - 签名配置: signingConfigs.release { storeFile, storePassword, keyAlias, keyPassword }
+
+.gitignore
+  - 2026-07-04 H8: 新增排除项
+    · 分发包/ （构建产物目录，含嵌入的 Publishable Key）
+    · *.keystore / *.jks （Android 签名密钥文件）
+    · keystore.properties （签名配置，含密码）
+
+
+# ─────────── 八、快速定位指南 ───────────
+
+【登录/注册相关】
+  - 本地登录逻辑 → Account.jsx handleLocalLogin (L228)
+  - 云端登录逻辑 → Account.jsx handleLogin (L244)
+  - 登录状态管理 → AppContext.jsx setLogin (L277), SET_LOGIN reducer (L83)
+  - 路由守卫 → App.jsx RequireAuth (L62)
+
+【输入栏/语音/OCR】
+  - 底部输入栏 → InputBar.jsx (全文件) + Category.jsx L764
+  - 悬浮输入栏 → FloatingInputBar.jsx (全文件) + Category.jsx L765
+  - 多行文本展开面板 → InputBar.jsx expandOpen state + 底部面板 JSX（L1040-1150）
+  - textarea 自动扩展 → InputBar.jsx autoResize + textareaRef（L79-92）
+  - 语音识别入口 → InputBar.jsx handleVoice (L230+) → recorder.js
+  - 语音转文字 → transcribe.js, speech.js
+  - 图片 OCR → InputBar.jsx handleImageSelect (L466) → deepseek.js extractTextFromImage
+
+【卡片/背诵】
+  - 卡片组件 → CardItem.jsx
+  - 卡片列表 → UnitGroup.jsx
+  - 背诵页面 → Memorize.jsx (全文件)
+  - 翻卡逻辑 → Memorize.jsx handleFlip (L145)
+  - AI 生成卡片 → deepseek.js generateCards → Category.jsx handleGenerate (L40)
+
+【数据库/同步】
+  - 本地 IndexedDB 表定义与主键策略 → db.js（AIFlashCardsDB_v2 / OLD_DB_NAME）
+      · 新库：AIFlashCardsDB_v2，版本 1，schema 主键统一为 &id
+      · 旧库迁移（AIFlashCardsDB → AIFlashCardsDB_v2）：通过 readAllFromOldDbRaw() 用原生 IndexedDB 读取（避开 Dexie schema 校验），再写入新库
+      · 注意：不要在迁移中声明旧库的 Dexie schema（会触发 "changing primary key" 错误）
+  - 卡片计数关联断裂修复 (2026-06-13):
+      · 问题：Home.jsx 使用 getCardCountByCategory(cid) → units→cards 路径计数，当卡片 unitId 与 category 下的 unit 不匹配时返回 0；
+        Account.jsx 使用 getCardCount() → 直接 db.cards.count() 返回 10，导致"记录界面显示0，但账号页显示10"的不一致。
+      · 根因：同步/导入后卡片→unit→category 关联断裂，cards 表有数据但无法通过 units 关系链追溯到 category。
+      · 修复：
+        - getCardCountByCategory: 当 units 路径返回 0 时，回退到遍历 cards.toArray() 按 categoryId 匹配计数
+        - getAllCardsByCategory: 同上逻辑，当 units 路径返回空时回退到 cards.toArray() 按 categoryId 筛选
+        - addUnits: 新建卡片时同时写入 categoryId 字段，预防未来关联断裂
+      · 位置：db.js getCardCountByCategory (L169)、getAllCardsByCategory (L183)、addUnits (L160)
+  - 云端 Supabase ↔ 本地字段映射 → sync.js snakeToCamel() / camelToSnake()
+      · categories/units 云端 name 与 title 两种字段的兼容：snakeToCamel() 同时把两者转为 name
+      · card_status 等早期建表可能无 created_at 列：getCloudTableData() 仅在 schema 包含 created_at 时才 .order('created_at')
+      · 单条添加统一字段转换：addCloudRecord() 改用 camelToSnake() 而非内联正则
+      · user_profiles 字段映射：avatarUrl→avatar_url, avatarType→avatar_type
+  - 云端数据处理页 → CloudData.jsx（全表下载/上传）与 CloudDataDetail.jsx（单条下载/删除/添加）
+      · 单条下载时统一的字段归一化：CloudDataDetail.jsx handleDownload()（确保 id、name、时间戳）
+      · 错题记录表支持：CloudDataDetail.jsx 的 TABLE_META / FORM_FIELDS / LOCAL_TABLE_MAP 均已包含 wrong_answers
+      · 云端未更新筛选 → CloudDataDetail.jsx isShowingLocal (L479)，显示本地有但云端没有的数据，操作按钮切换为"上传到云端"
+      · 学习状态禁止上传 → CloudData.jsx DATA_ITEMS card_status.noUpload (L12-L19)
+      · 错题记录上传修复 → sync.js TABLE_SCHEMAS.wrong_answers 添加 updated_at (L152)，SQL wrong_answers 表添加 updated_at 列
+      · [2026-06-15 补充] test_sessions 同步字段：sync.js TABLE_SCHEMAS.test_sessions.fields 追加 'unit_id', 'category_id'，SQL v3.8 在 test_sessions 表新增 unit_id/category_id 两列与对应索引
+
+【用户资料/头像/昵称】
+  - 用户资料服务（云端读写 + 本地缓存）→ userProfile.js
+      · 云端读取：getUserProfile() → Supabase user_profiles 表查询
+      · 云端保存：saveUserProfile() → Supabase user_profiles 表 upsert
+      · 本地缓存：localStorage key = 'app_user_profile'（JSON 格式）
+      · 注意：用户资料使用 localStorage，不使用 IndexedDB
+  - 资料编辑对话框 → ProfileEditDialog.jsx（昵称 + 预设头像 + 自定义头像 + 标签）
+      · 预设头像：8 个 emoji，存储为 avatar ID（如 avatar_1）
+      · 自定义头像：图片转为 base64 存储在 avatar_url 字段，avatar_type = 'custom'
+      · 标签：text[] 数组，最多 5 个，单个最长 10 字符
+  - Account 页资料加载与显示 → Account.jsx
+      · 登录后自动调用 loadUserProfile() (L150)
+      · 页面可见性变化时刷新（L155-L166）
+      · 头像与昵称显示（L835-L870）
+  - SQL 表定义 → 我在SQL editor执行的命令.txt user_profiles 表 (L388, L453-L517)
+      · 字段：id, user_id, nickname, avatar_url, avatar_type, tags, created_at, updated_at
+      · RLS 策略：auth.uid() = user_id::uuid（text 到 uuid 的类型转换）
+      · 触发器：user_profiles_update_modtime 自动更新 updated_at
+
+【设置/配置】
+  - 设置主页 → SettingsMain.jsx (5 个分类入口卡片)
+  - AI 服务设置 → SettingsAiService.jsx (4 个提供商 + 底部抽屉选择菜单 + useMemo 缓存)
+  - 语音识别设置 → SettingsSpeech.jsx (4 种模式 + 千问 Key 共享提示)
+  - 显示与偏好设置 → SettingsDisplay.jsx (字体/护眼/输入栏/OCR 开关 + 缓存数量显示)
+  - 云端同步设置 → SettingsCloud.jsx (25 字段同步 + 上传确认弹窗 + 自定义头像保留)
+  - 开发者选项 → SettingsDeveloper.jsx (开发者模式 + AI 调试面板 + AI 调用统计)
+  - 设置云端同步服务 → settingsSync.js (25 个 SYNCED_SETTING_KEYS)
+  - 管理员密码 → AppContext.jsx (L272-305)
+  - Runtime Supabase 配置 → SettingsCloud.jsx 管理员面板
+  - 护眼模式 → AppContext.jsx setEyeProtection + index.css L149
+  - OCR 自动生成开关 → AppContext.jsx state.ocrAutoGenerate + setOcrAutoGenerate（2026-06-19 改为全局状态）
+  - AI 调试面板开关 → AppContext.jsx state.aiDebugPanel + setAiDebugPanel（2026-06-19 新增）
+
+【样式】
+  - 全局 CSS → index.css
+  - CSS 变量 → index.css L8-L64
+  - 设置页样式 → index.css .settings-* (L920-L1225)
+  - 悬浮栏样式 → index.css .floating-inputbar-* (L1234-L1350)
+  - Toast 样式 → index.css .toast-* (L1250+)
+  - 护眼模式覆盖 → index.css html[data-eye-protection="true"] (L149)
+
+【统计/账号页】
+  - 统计面板 → Account.jsx renderStatCard (L501) + loadStats (L170)
+  - 收藏夹 → Account.jsx toggleBookmarks (L366)
+  - 进度环 → Home.jsx SVG circle
+
+【Android 构建】
+  - Gradle 全局属性 → android/gradle.properties
+      · kotlin.compiler.execution.strategy=in-process: 绕过 Windows Defender 锁定 Kotlin daemon 临时文件
+      · android.aapt2DaemonKeepAlive=0: 不保持 aapt2 daemon 常驻，每次任务结束即销毁，减少被安全软件拦截
+      · org.gradle.jvmargs 追加 -Djava.io.tmpdir=C:\Users\21142\.gradle\tmp: 强制 Java 临时目录到 Gradle 信任路径，避免 aapt2 daemon IPC 管道被 Defender 拦截
+  - 顶层构建脚本 → android/build.gradle (AGP 9.2.1，beforeProject 强制版本统一 + 为 node_modules 下插件自动注入 namespace 并清理重复的 AndroidManifest package 属性；subprojects/afterEvaluate 兜底 namespace 注入)
+  - APP 模块构建 → android/app/build.gradle (已移除 flatDir/fileTree jar 依赖)
+  - 主入口 Activity → android/app/src/main/java/com/eggli/flashcards/MainActivity.java
+  - Cordova 插件聚合 → android/capacitor-cordova-android-plugins/build.gradle (已移除 flatDir)
+  - 模块声明 → android/settings.gradle + capacitor.settings.gradle (自动生成，勿编辑)
+  - gradle-wrapper.properties → 移除 GRADLE_USER_HOME=C:/用户/21142/.gradle（中文路径不存在，导致 aapt2 daemon 启动时路径解析失败）
+  - 注意：系统级环境变量 GRADLE_USER_HOME=D:\Android\.gradle 与用户级 GRADLE_USER_HOME=C:\Users\21142\.gradle 不一致，以用户级为准
+  - AAPT2 缓存清理：需定期清理 %USERPROFILE%\.gradle\caches\<gradle-version>\transforms 下的 aapt2-* 目录，迫使 Gradle 重新提取
+  - capacitor-http 插件 → node_modules/@capacitor/http/android/ (L13 删除未使用的 import com.getcapacitor.PluginRequestCodes；L217 savedCall.error() → savedCall.reject() 以匹配新版 Capacitor PluginCall API；AndroidManifest 删除 package 属性避免与 build.gradle namespace 冲突；删除内部 .gradle 缓存)
+
+【Room 本地数据库 (2026-07-07 新增)】
+  - 技术栈: Room 2.6.1 + KSP (KSP1 模式, ksp.useKSP2=false)，Kotlin 2.2.21，Hilt 2.60.1
+  - 数据库名: eggli_flashcards，版本 1，exportSchema=false
+  - 基础路径: android/app/src/main/java/com/eggli/flashcards/data/
+
+  Entity 类 (data/entity/) — 13 个表，对应 Dexie v7 schema:
+  - Category.kt → 表 categories (id, name, purpose, createdAt)，索引: name, createdAt
+  - Chapter.kt → 表 chapters (id, categoryId, name, topicId?, createdAt, order)，索引: categoryId, sortOrder
+  - StudyUnit.kt → 表 units (id, categoryId, chapterId?, name, createdAt, order)，索引: categoryId, chapterId, sortOrder
+    · 注意: Kotlin 关键字 Unit 用 StudyUnit 替代
+  - Card.kt → 表 cards (id, unitId, categoryId, chapterId?, knowledgePoint?, front, back, createdAt, order, type, options?, answerBlank?)
+    · type 默认 "qa"，索引: unitId, categoryId, chapterId, type, createdAt, sortOrder
+  - CardStatus.kt → 表 cardStatus (id, cardId, categoryId, chapterId?, status, updatedAt, reviewCount, easeFactor, interval, repetitions, lastReviewedAt?, nextReviewAt?, difficulty?, wrongCount, wrongStreak, mode?)
+    · SRS 间隔重复算法字段: easeFactor(2.5f), interval(0), repetitions(0)
+  - Bookmark.kt → 表 bookmarks (id, cardId, createdAt)，索引: cardId, createdAt
+  - WrongAnswer.kt → 表 wrongAnswers (id, cardId, categoryId, unitId, chapterId?, count, lastWrongAt, unitName?, categoryName?, stem?)
+  - TestRecord.kt → 表 testRecords (id, categoryId, unitId?, chapterId?, questionId, testSessionId?, userId?, testType, createdAt)
+  - TestQuestion.kt → 表 testQuestions (id, categoryId, unitId?, chapterId?, cardId?, testType, targetId, userId?)
+  - TestSession.kt → 表 testSessions (id, testType, typeId?, userId?, isCompleted)
+  - ReviewHistory.kt → 表 reviewHistory (id, cardId, categoryId, wasMastered, reviewedAt, mode?)
+  - StudyPlan.kt → 表 studyPlans (id, categoryId, dailyReviewLimit(50), dailyNewLimit(20), priority(0), createdAt, updatedAt)
+  - OcrCache.kt → 表 ocrCache (imageHash[主键], timestamp, result)
+    · 注意: 主键是 imageHash 而非 id
+
+  重要: `order` 字段为 SQL 保留字，Room 不允许在 @ColumnInfo 中使用反引号，
+  实际列名映射为 `sortOrder` (@ColumnInfo(name = "sortOrder"))，Kotlin 属性名仍为 `order`。
+  DAO 查询中 ORDER BY 子句使用 `sortOrder` 列名。
+
+  DAO 接口 (data/dao/) — 13 个，每个提供 CRUD + 索引查询 + Flow/suspend:
+  - CategoryDao.kt, ChapterDao.kt, StudyUnitDao.kt, CardDao.kt, CardStatusDao.kt
+  - BookmarkDao.kt, WrongAnswerDao.kt, TestRecordDao.kt, TestQuestionDao.kt
+  - TestSessionDao.kt, ReviewHistoryDao.kt, StudyPlanDao.kt, OcrCacheDao.kt
+  · 批量插入: @Insert(onConflict = REPLACE)
+  · @Transaction: CardDao.getCardsByStatus (跨表查询 cards + cardStatus)
+  · DELETE 查询返回 Int (受影响行数)
+
+  Database (data/database/):
+  - AppDatabase.kt → @Database(entities=[13个Entity], version=1)
+    · 单例模式: companion object, @Volatile INSTANCE
+    · getInstance(context): 线程安全双检查锁，fallbackToDestructiveMigration
+    · build(context): Hilt DI 工厂方法
+  - Converters.kt → StringListConverter (List<String> ↔ JSON String, 使用 Gson)
+
+  构建配置变更 (gradle.properties):
+  - ksp.useKSP2=false: Room 2.6.1 的 KSP2 处理器存在 "unexpected jvm signature V" bug，回退 KSP1
+  - android.builtInKotlin=false: AGP 9.x 内置 Kotlin 与 KSP 不兼容，禁用并显式应用 kotlin-android 插件
+  - android.newDsl=false: 重新启用旧版 Variant API，修复 Hilt BaseExtension 强转问题
+
+  附带修复 (非 Room 相关，因构建配置变更暴露):
+  - AuthInterceptor.kt / AuthRepository.kt: MasterKey.Builder.setKeyAlias() 在 security-crypto 1.1.0-alpha06 中已移除，改用构造器 MasterKey.Builder(context, keyAlias)
+  - TailscaleVPNPlugin.kt: ActivityResult.getResultCode() 为 Kotlin 类属性，改用 result.resultCode 属性访问语法
+  - AuthDtos.kt: LoginResponse / VerifyOtpResponse 的 getAccessToken()/getRefreshToken()/getExpiresAt()/getUser() 方法与同名属性 JVM 签名冲突，重命名为 resolve*() 系列方法
+
+【修复记录 / 快速索引】
+  - npm run build 目录错误 → 必须在 ai-flashcard-app/ 目录下执行（父目录无 package.json）
+  - Android 构建 namespace 冲突 → capacitor-http 插件 AndroidManifest 的 package 属性与 build.gradle namespace 冲突（AGP 9.x 强制）
+  - Android 构建 Kotlin daemon AccessDeniedException → Windows Defender 锁定 kotlin-daemon 临时文件，通过 in-process 编译策略规避
+  - Android 构建 AAPT2 daemon 启动失败（Windows Universal C Runtime / CreateProcess error=740）→ 诊断：aapt2.exe 本身正常运行，但 Gradle/AGP 启动 daemon 模式时 IPC 管道被 Windows 安全软件拦截；修复：android.aapt2DaemonKeepAlive=0 + -Djava.io.tmpdir 指向 Gradle 信任目录 + 清理 .gradle/caches/*/transforms 下 aapt2-* 缓存；需额外将 C:\Users\21142\.gradle 加入 Windows Defender 排除项
+  - OCR后AI拆解导致白屏 → 2026-06-13 多维度修复：
+      · NewCardPanel.jsx: safeCards/safeExistingUnits 防御 (props为非数组时不崩溃)
+      · Category.jsx: handleGenerate/handleImageOCR 的 useCallback 依赖列表补齐 (闭包变量不陈旧)
+      · deepseek.js: 4个API调用函数添加 apiKey 前置检查 (空密钥立即抛出明确错误)
+      · aiService.js: classifyCardsByCategoryContent 已有完整 try-catch + fallbackClassify 降级
+      · 2026-06-13 分类Prompt修复: classifyCardsByCategoryContent 不再通过 generateCards 发送分类请求（generateCards 会内部拼接 CARD_GENERATION_PROMPT 污染分类 prompt），改为直接调用 httpPost 发送纯净分类 prompt，支持 4 种 AI 服务模式
+      · New imports: constants.js (API URLs) / httpClient.js (httpPost) / sparkAuth.js (generateSparkBearerToken, parseSparkToken)
+      · ErrorBoundary.jsx (新增): 应用级错误边界，捕获渲染异常并展示友好页面
+      · App.jsx: ErrorBoundary 包裹整个应用 (L179)
+      · index.css: 添加 --color-bg-offset CSS 变量（默认 + 经典主题）
+      · 全部按钮 minHeight ≥ 44px 移动端适配
+  - 2026-06-23 修复：Account.jsx 报错 userProfile.tags.map is not a function + 复习历史/学习计划上传失败
+      · 根因1: SQL user_profiles.tags 字段是 TEXT 类型（非 TEXT[] 数组），云端读取返回字符串，.map 失败
+      · 根因2: sync.js TABLE_META 缺少 review_history 和 study_plans 定义，uploadTableToCloud 直接返回"未知数据表"
+      · 修复1: Account.jsx L1110 改用 Array.isArray(userProfile?.tags) 防御性检查
+      · 修复2: userProfile.js getUserProfile 读取云端 tags 时做类型转换（字符串→数组）
+      · 修复3: sync.js TABLE_META 添加 review_history 和 study_plans 定义（L1010-1012）
+      · SQL: user_profiles.tags 字段类型从 TEXT 改为 TEXT[]（需在云端执行 ALTER TABLE）
+  - 2026-06-23 AI 出题输出格式从 JSON 改为 Markdown 表格（提升解析稳定性）
+      · 根因: JSON 嵌套结构（options 数组套对象）AI 容易输出错误，JSON.parse 一失败整批题目丢失
+      · 新增: parseTableResponse 表格解析器（testQuestionService.js L1786-1914）逐行解析，单行出错不影响其他题
+      · 修改: buildStrongModelPrompt 要求输出 Markdown 表格（testQuestionService.js L676-698）
+      · 修改: 4 个弱模型 prompt 模板（constants.js L492-619）全部改为表格输出
+      · 修改: buildPrompt 旧版降级路径追加表格格式覆盖指令（testQuestionService.js L199-200）
+      · 修改: parseQuestionResponse 和 parseMultiTypeResponse 优先表格解析，回退 JSON（testQuestionService.js）
+      · 表头: | type | stem | A | B | C | D | answer | cardId | diff | analysis |
+      · 题型简称: single=单选, multi=多选, judge=判断, fill=填空
+  - 2026-06-23 修复出题两步流程的数量限制逻辑
+      · 根因: 第一步（生成入库）错误地限制了数量（slice(0, maxTotal)），导致题目未全部入库
+      · 修复1: updateQuestionBank 第一步移除 slice(0, maxTotal) 限制，所有通过校验的题目全部入库（testQuestionService.js L3259-3262）
+      · 修复2: getReviewQuestions 第二步添加总数量限制（testQuestionService.js L3803-3805）
+        - 单元检测：每知识点最多 2 题型，总题目 ≤ 50 道
+        - 章节/分类检测：每知识点最多 2 题型，总题目 ≤ 100 道
+  - 2026-06-23 修复过滤过期题目逻辑 bug
+      · 根因: getReviewQuestions 中过滤条件 q.cardUpdatedAt > q.createdAt 永远为 false（题目保存时两字段都设为 now，之后都不变），过滤完全无效
+      · 正确逻辑: 应比较卡片的 updatedAt 和题目的 createdAt（卡片更新后旧题目过期）
+      · 修复: getReviewQuestions 中获取卡片信息，构建 cardUpdateMap，用 q.createdAt >= card.updatedAt 判断未过期（testQuestionService.js L3774-3794）
+  - 2026-06-23 优化题目抽取的随机性和知识点覆盖
+      · 根因1: 使用 sort(() => Math.random() - 0.5) 打乱不是真正的随机算法
+      · 根因2: 先按顺序取每知识点前 2 题再打乱，每知识点被选中的是"最早的 2 题"非随机
+      · 根因3: 截取前 N 题时可能漏掉部分知识点（如 30 知识点×2 题=60 题，截取 50 题漏 5 个知识点）
+      · 修复: 改用 Fisher-Yates 洗牌算法 + 先打乱再限制每知识点 2 题 + 超上限时确保每知识点至少 1 题（testQuestionService.js L3800-3867）
+  - 2026-06-23 减小强模型 batchSize 提升出题数量
+      · 根因: batchSize=20（DeepSeek）/12（星火）时，每次调用目标 22 道，AI 只返回 7-11 道（41.7%）
+      · 原因: max_tokens 够用（6600 tokens 足够 22 道），但 AI 倾向少生成
+      · 修复: STRONG_MODEL_STRATEGY 所有模型 batchSize 统一改为 6（constants.js L643-656）
+      · 修复: STRONG_DEFAULT_BATCH_SIZE 兜底值 12→6（constants.js L667）
+      · 预期: 11 卡片 / 6 = 2 批，每次目标 10-12 道，AI 更容易达到，总生成量提升
+  - 2026-06-23 同分类重整（classifySameCategoryReorganize）输出格式从 JSON 改为分组线性表
+      · 根因: JSON 嵌套结构（chapters→units→cardIndices）AI 容易输出错误，弱模型解析成功率低
+      · 新增: parseLinearSameCategoryResult 解析函数（aiService.js L5569-5713），支持3种深度模式的分组线性表解析
+      · 修改: 3种深度模式的 Prompt 输出格式从 JSON 改为分组线性表（aiService.js L7125/L7161/L7193）
+        - chapter-and-unit: chapterIndex|chapterName|unitIndex|unitName|cardIndices
+        - chapter-only: chapterIndex|chapterName|unitName|cardIndices
+        - unit-only: unitIndex|unitName|cardIndices
+      · 修改: 解析逻辑改为线性表优先、JSON 兜底（aiService.js L7208-7212）
+      · 向后兼容: AI 返回 JSON 也能通过 parseSameCategoryResult 正常解析
+
+【常量/配置键】
+  - 所有常量 → constants.js
+  - localStorage key → constants.js STORAGE_KEYS (L10-26)
+  - AI prompt → constants.js (L60-117)
+  - 模型/模式/摘要级别选项 → constants.js (L5-L62)
+
+【弹窗动画体系（2026-06-12 新增）】
+  - 背诵页弹窗动画 → src/pages/Memorize.jsx
+      · 关闭状态字段: closingEdit / closingMove / closingSwipe / closingModal / closingCongrats / closingResetConfirm
+      · 工具函数: startClosing(setClosing, setShow, ms) 在 useEffect 后声明
+      · JSX 渲染: {(showXxx || closingXxx) && (...)}
+      · 样式类: modal-backdrop / modal-panel / modal-center + .closing 变体
+  - 删除确认弹窗动画 → src/components/ConfirmDialog.jsx
+      · 内部 closing state；handleClose 先 setClosing(true)，再 setTimeout 220ms 调用外部回调
+      · 样式类: dialog-overlay / dialog + .dialog-overlay.closing / .dialog.closing
+  - 动画关键帧与 CSS → src/index.css
+      · @keyframes scaleIn / scaleOut (中心弹窗缩放)
+      · @keyframes dialogOut (ConfirmDialog 淡出)
+      · 类: .modal-backdrop / .modal-panel / .modal-center / .modal-center-panel + .closing 变体
+      · 扩展: .dialog-overlay.closing / .dialog.closing
+      · prefers-reduced-motion: 所有弹窗类统一被压缩到 60ms 线性动画
+      · 统一缓动: cubic-bezier(0.32, 0.72, 0, 1)
+      · 时长: 遮罩 220ms，底部面板 280ms，中心面板 220ms / 240ms (开)
+
+
+# ─────────── 九、悬浮窗快速录入系统 (2026-07-04 Task 17/18) ───────────
+
+【JS 层封装 + 独立页面 + SettingsDisplay 系统模式】
+
+src/plugins/SystemFloatingWindowPlugin.ts (2026-07-04 新增，Task 17 Step 1)
+  Capacitor Plugin TypeScript 声明（系统悬浮窗原生插件接口）
+  - 注册插件: registerPlugin<SystemFloatingWindowPlugin>('SystemFloatingWindow')
+  - 接口方法:
+    · canDrawOverlays(): Promise<{ granted: boolean }> — 检查 SYSTEM_ALERT_WINDOW 权限
+    · requestPermission(): Promise<{ opened, granted? }> — 跳转系统设置授权
+    · show(): Promise<{ shown }> — 启动系统悬浮窗服务（SystemFloatingWindowService.kt）
+    · hide(): Promise<{ hidden }> — 停止系统悬浮窗服务
+    · isShowing(): Promise<{ showing }> — 查询悬浮窗当前显示状态
+  - default export: SystemFloatingWindow（供 systemFloatingWindow.js 动态 import）
+  - 对应原生实现: android/app/src/main/java/com/eggli/flashcards/services/SystemFloatingWindowService.kt (Task 15)
+  - 注意: Plugin 类尚未在 MainActivity.kt 中 registerPlugin（Task 19+ 待补），当前调用会抛 "not implemented" 错误，
+    systemFloatingWindow.js 中已用 try-catch 兜底返回 false
+
+src/services/systemFloatingWindow.js (2026-07-04 新增，Task 17 Step 2)
+  系统悬浮窗服务封装层（Web/原生双端兼容）
+  - isSystemFloatingSupported(): 检测 Capacitor.isNativePlatform()，Web 端返回 false
+  - canDrawOverlays(): 查询 SYSTEM_ALERT_WINDOW 权限（Web 端返回 false）
+  - requestOverlayPermission(): 跳转系统设置授权页（Web 端返回 false）
+  - showSystemFloating(): 启动 SystemFloatingWindowService 前台服务
+  - hideSystemFloating(): 停止服务
+  - isSystemFloatingShowing(): 查询显示状态
+  - 动态 import: const { default: SystemFloatingWindow } = await import('../plugins/SystemFloatingWindowPlugin')
+    （注意: 解构 default，因为 Plugin.ts 使用 default export）
+  - 所有函数均有 try-catch 兜底，Web 端 / 未注册插件时返回 false 而非抛错
+  依赖: @capacitor/core (Capacitor.isNativePlatform), ../plugins/SystemFloatingWindowPlugin
+
+src/pages/FloatingWindowPage.jsx (2026-07-04 新增，Task 17 Step 3)
+  系统悬浮窗 WebView 加载的独立页面（轻量级，无路由依赖，无 TabBar）
+  - URL: /floating-window（App.jsx 顶层 Routes 内，独立于 TabBarLayout）
+  - WebView 加载入口: floating-window.html → /src/floating-window-main.jsx
+  - 状态: inputValue, currentTarget, showTargetSelector, recentTargets, recallRefreshKey, submitting
+  - showToast: 内联实现（document.createElement + setTimeout），不依赖 AppContext
+    · 修正: 计划原文 showToast 在 handleSubmit 之后定义会导致 ReferenceError，已上移
+  - 归属持久化: localStorage 'app_current_target' / 'app_recent_targets'
+  - handleSubmit: 调用 saveDraft({ source: 'system-floating' })，不收起悬浮窗（保持快速录入状态）
+  - 关闭按钮: 动态 import systemFloatingWindow.js → hideSystemFloating()
+  - 复用组件: FloatingTargetSelector, FloatingQuickRecall, FloatingTemplates
+  - 不复用 InputBar: 避免引入 InputBar 的语音/OCR/AI 等过多依赖
+  Props: 无（独立页面，不接收 props）
+  依赖: draftService.saveDraft, db (getRecentDrafts/deleteDraft), 三个 Floating* 组件
+  → 定位: showToast useCallback → L32-42
+  → 定位: handleSubmit → L64-90
+  → 定位: 关闭按钮 onClick → L103-107
+
+src/floating-window-main.jsx (2026-07-04 新增，Task 17 Step 5b)
+  系统悬浮窗独立 React 入口（与主应用 main.jsx 隔离）
+  - createRoot(document.getElementById('root')).render(<FloatingWindowPage />)
+  - 引入 index.css 共用样式（与主应用样式一致）
+  - 不引入 AppProvider / BrowserRouter / ErrorBoundary（轻量级，悬浮窗场景不需要）
+  依赖: react, react-dom/client, ./pages/FloatingWindowPage, ./index.css
+
+floating-window.html (2026-07-04 新增，项目根目录，Task 17 Step 5a)
+  系统悬浮窗 WebView 加载的 HTML 入口
+  - 与 index.html 平级，由 vite.config.js build.rollupOptions.input.floatingWindow 声明
+  - 透明背景: html, body { background: transparent }（配合 SystemFloatingWindowService.kt 透明 WebView）
+  - viewport: maximum-scale=1.0, user-scalable=no（禁止缩放，符合移动端 App 标准）
+  - script type="module" src="/src/floating-window-main.jsx"（Vite 自动转译）
+  - Android 加载路径: file:///android_asset/public/floating-window.html（SystemFloatingWindowService.kt L150）
+
+vite.config.js (2026-07-04 修改，Task 17 Step 6)
+  Vite 构建配置（多页面入口）
+  - 新增 import: { fileURLToPath, URL } from 'node:url'（ESM 方式获取路径，无 __dirname）
+  - 新增 build.rollupOptions.input:
+    · main: fileURLToPath(new URL('./index.html', import.meta.url))
+    · floatingWindow: fileURLToPath(new URL('./floating-window.html', import.meta.url))
+  - 保持现有: plugins (react, tailwindcss), base './', server (host 0.0.0.0, port 5173, strictPort, spark 代理)
+  - 注意: dev 模式下 rollupOptions.input 不生效，Vite 按 URL 路径直接 serve HTML 文件
+         build 模式下才会按 input 多入口生成 dist/floating-window.html + 独立 chunk
+
+src/App.jsx (2026-07-04 修改，Task 17 Step 4)
+  路由配置新增 /floating-window
+  - import: FloatingWindowPage from './pages/FloatingWindowPage' (L40)
+  - Route: <Route path="/floating-window" element={<FloatingWindowPage />} /> (L273)
+  - 位置: <Routes> 内，<Route element={<TabBarLayout />}> 之外（顶层独立路由）
+    · 这样悬浮窗页面不会显示 TabBar，避免占用悬浮窗有限的 WebView 空间
+  → 定位: import → L40
+  → 定位: Route 声明 → L273
+
+src/pages/SettingsDisplay.jsx (2026-07-04 修改，Task 18 Step 8)
+  显示与偏好设置子页面新增「系统悬浮窗」模式
+  - 新增常量: INPUT_BAR_MODES = [{fixed,'底部'},{floating,'应用内'},{system,'系统'}] (L10-14)
+  - 替换 toggleInputBarMode → handleInputBarModeChange(mode) (L48-83)
+    · mode === 'system': 动态 import systemFloatingWindow.js
+      - isSystemFloatingSupported 检测原生平台 → 不支持自动切回 'floating' + warn toast
+      - canDrawOverlays 检查权限 → 未授权调用 requestOverlayPermission 跳系统设置
+      - 授权通过 → showSystemFloating 启动服务 + setInputBarMode('system') + success toast
+    · mode 切换到 fixed/floating: 若当前是 system，先 hideSystemFloating 停止服务
+  - UI 改造: 原单击切换行 → 三选项分段控件（与主题模式选择器风格一致）
+    · 三个按钮: 底部 / 应用内 / 系统（选中态 var(--color-primary) 背景 + 白字）
+    · minHeight: 32px, padding: 6px 12px, fontSize: 13px（移动端触控友好）
+    · 副标题动态显示: "系统悬浮（其他 App 可见）/ 应用内悬浮窗 / 底部固定栏"
+  → 定位: INPUT_BAR_MODES 常量 → L10-14
+  → 定位: handleInputBarModeChange → L48-83
+  → 定位: 分段控件 JSX → L196-229
+
+src/index.css (2026-07-04 追加，Task 17 Step 7)
+  系统悬浮窗独立页面样式
+  - 追加位置: 文件末尾 L7193-7258
+  - 类名空间:
+    · .floating-window-page: 100vh flex column 容器，padding 8px，overflow hidden
+    · .floating-window-header: 标题 + 关闭按钮，bottom border 分隔
+    · .floating-window-title: 14px / 600 字重
+    · .floating-window-close: 22px × 按钮，minHeight/minWidth 36px（移动端触控）
+    · .floating-window-textarea: 80px min-height，8px padding，resize vertical
+    · .floating-window-submit-btn: primary 背景，40px min-height，disabled 灰色
+  - 兼容: 同时使用 CSS 变量和硬编码 fallback（var(--color-surface, #fff)）
+  → 定位: L7193-7258
+
+【快速定位指南 - 悬浮窗快速录入系统】
+
+【系统悬浮窗 JS 调用链】
+  SettingsDisplay.jsx handleInputBarModeChange('system')
+    → import('../services/systemFloatingWindow')
+    → isSystemFloatingSupported() → Capacitor.isNativePlatform()
+    → canDrawOverlays() → SystemFloatingWindowPlugin.canDrawOverlays()
+    → requestOverlayPermission() → SystemFloatingWindowPlugin.requestPermission()
+    → showSystemFloating() → SystemFloatingWindowPlugin.show()
+      → Android SystemFloatingWindowService.startService()
+      → showFloatingWindow() → WebView.loadUrl('file:///android_asset/public/floating-window.html')
+      → floating-window.html → /src/floating-window-main.jsx → FloatingWindowPage.jsx
+
+【系统悬浮窗 vs 应用内悬浮窗】
+  - 应用内悬浮窗 (floating): FloatingInputBar.jsx，仅 App 内可见，TabBarLayout 条件渲染
+  - 系统悬浮窗 (system): SystemFloatingWindowService.kt + WebView，其他 App 上层可见
+  - 切换: SettingsDisplay.jsx 三选项分段控件（底部/应用内/系统）
+
+【独立页面 vs 主应用】
+  - 主应用: index.html → /src/main.jsx → App.jsx → AppProvider + BrowserRouter + TabBarLayout
+  - 悬浮窗页: floating-window.html → /src/floating-window-main.jsx → FloatingWindowPage
+    · 不挂 AppProvider（无 useApp()，showToast 内联实现）
+    · 不挂 BrowserRouter（无路由，单页面）
+    · 不挂 ErrorBoundary（轻量级，崩溃由 WebView 容错）
+    · 共用 index.css 样式
+
+【待办（Task 19+）】
+  - MainActivity.kt 中 registerPlugin(SystemFloatingWindow::class.java)（Plugin 注册）
+  - 在 Android 端实测系统悬浮窗功能（需要 Android 6.0+ SYSTEM_ALERT_WINDOW 权限）
+  - FOREGROUND_SERVICE_SPECIAL_USE 权限可能需要补充（Android 14+ specialUse 类型）
+
+# ─────────── 十二、原生 Android 项目 (native-android/) ───────────
+# 更新: 2026-07-07
+
+native-android/app/src/main/java/com/eggli/flashcards/data/model/
+  数据实体层（对应 Web App Dexie schema AIFlashCardsDB_v2）
+  - Category.kt: 分类表 (id, name, purpose, createdAt)
+  - Topic.kt: 主题表 (id, categoryId, name, createdAt)
+  - Chapter.kt: 章节表 (id, categoryId, topicId, name, createdAt, order)
+  - Unit.kt: 单元表 (id, categoryId, chapterId, name, createdAt, order)
+  - Card.kt: 卡片表 (id, unitId, categoryId, chapterId, front, back, knowledgePoint, createdAt, order, type, options, answerBlank)
+  - CardStatus.kt: 卡片状态表 (id, cardId, categoryId, chapterId, status, updatedAt, reviewCount, easeFactor, interval, repetitions, lastReviewedAt, nextReviewAt, difficulty, wrongCount, wrongStreak, mode)
+  - Bookmark.kt: 收藏表 (id, cardId, createdAt)
+  - WrongAnswer.kt: 错题表 (id, cardId, categoryId, unitId, chapterId, count, lastWrongAt, unitName, categoryName, stem)
+  - TestQuestion.kt: 测试题目表 (id, categoryId, unitId, chapterId, cardId, testType, targetId, userId, pendingReview)
+  - TestRecord.kt: 测试记录表 (id, categoryId, unitId, chapterId, questionId, testSessionId, userId, testType, parentRecordId, redoCount, createdAt)
+  - TestSession.kt: 测试会话表 (id, testType, typeId, userId, isCompleted)
+  - ReviewHistory.kt: 复习历史表 (id, cardId, categoryId, chapterId, wasMastered, reviewedAt, mode)
+  - StudyPlan.kt: 学习计划表 (id, categoryId, chapterId, dailyReviewLimit, dailyNewLimit, priority, createdAt, updatedAt)
+  - LinkGenerationRun.kt: 联结生成记录表 (id, categoryId, mode, createdAt)
+  - Draft.kt: 草稿表 (id, categoryId, chapterId, unitId, content, source, templateType, status, retryCount, errorMessage, createdAt, generatedAt)
+
+native-android/app/src/main/java/com/eggli/flashcards/data/local/dao/
+  DAO 接口层（Room @Dao，支持协程 Flow 与 suspend）
+  - CategoryDao.kt: insert/update/delete + getAll/getById/getByName/deleteById
+  - TopicDao.kt: insert/update/delete + getAll/getById/getByCategoryId
+  - ChapterDao.kt: insert/update/delete + getAll/getById/getByCategoryId/getByTopicId/getByCategoryAndTopic
+  - UnitDao.kt: insert/update/delete + getAll/getById/getByCategoryId/getByChapterId
+  - CardDao.kt: insert/update/delete + getAll/getById/getByUnitId/getByCategoryId/getByChapterId/getByType
+  - CardStatusDao.kt: insert/update/delete + getAll/getById/getByCardId/getByCardAndCategory/getByCategoryId/getByChapterId/getByStatus/getDueForReview/getByMode
+  - BookmarkDao.kt: insert/update/delete + getAll/getById/getByCardId/isBookmarked
+  - WrongAnswerDao.kt: insert/update/delete + getAll/getById/getByCardId/getByCategoryId/getByUnitId/getByChapterId/getByCategoryAndUnit/getByCategoryAndChapter
+  - TestQuestionDao.kt: insert/update/delete + getAll/getById/getByCategoryId/getByUnitId/getByChapterId/getByCardId/getByTestTypeAndTarget/getByUserId/getPendingReview
+  - TestRecordDao.kt: insert/update/delete + getAll/getById/getByCategoryId/getByUnitId/getByChapterId/getByQuestionId/getByTestSessionId/getByTestType/getByParentRecordId/getByUserId
+  - TestSessionDao.kt: insert/update/delete + getAll/getById/getByTestType/getByTypeId/getByUserId/getByCompletionStatus
+  - ReviewHistoryDao.kt: insert/update/delete + getAll/getById/getByCardId/getByCategoryId/getByChapterId/getByMode/getByMasteredStatus
+  - StudyPlanDao.kt: insert/update/delete + getAll/getById/getByCategoryId/getByChapterId/getCategoryPlan
+  - LinkGenerationRunDao.kt: insert/update/delete + getAll/getById/getByCategoryId/getByMode
+  - DraftDao.kt: insert/update/delete + getAll/getById/getByCategoryId/getByChapterId/getByUnitId/getByStatus/getBySource
+
+native-android/app/src/main/java/com/eggli/flashcards/data/local/AppDatabase.kt
+  Room 数据库抽象类
+  - @Database: 15 个实体，version = 1，exportSchema = true
+  - 提供所有 DAO 的抽象访问方法
+  - DATABASE_NAME = "aiflashcards_db"
+
+native-android/app/src/main/java/com/eggli/flashcards/di/DatabaseModule.kt
+  Hilt 依赖注入模块（@Module @InstallIn(SingletonComponent::class)）
+  - provideDatabase(): 单例 AppDatabase，fallbackToDestructiveMigration
+  - provide*Dao(): 为每个 DAO 提供注入绑定
+
+native-android/app/src/main/java/com/eggli/flashcards/service/CloudbaseAuthService.kt
+  Cloudbase 认证服务（REST API）
+  - AuthState 密封类: SignedIn / SignedOut / OtpRequired / AuthError
+  - CloudbaseUser / CloudbaseSession 数据类
+  - 接口: signInWithPassword / signUp / verifyOtp / signOut / getCurrentUser / getSession / refreshSession
+  - onAuthStateChange: SharedFlow<AuthState> 状态监听
+  - CloudbaseAuthServiceImpl: OkHttp + EncryptedSharedPreferences 安全存储令牌
+  - 自动恢复会话状态（init 时检测）
+
+native-android/app/src/main/java/com/eggli/flashcards/service/CloudbaseDatabaseService.kt
+  Cloudbase RDB (PostgreSQL) REST API 封装
+  - WhereCondition / OrderBy 查询构造器
+  - DbResult<T> 密封类: Success / Error
+  - 接口: select / insert / insertBatch / upsert / update / delete
+  - 自动拼接 URL 查询参数，Bearer JWT 认证头
+  - mapToJsonObject 辅助方法支持嵌套结构
+
+native-android/app/src/main/java/com/eggli/flashcards/util/EbbinghausAlgorithm.kt
+  艾宾浩斯 + SM-2 算法完整实现（quality 0-5 版本）
+  - ReviewQuality 枚举: BLACKOUT(0) ~ EASY(5)
+  - ReviewResult 数据类
+  - calculateNextReview(difficulty, lastReviewed, repetitions, easeFactor)
+  - applyReviewResult(cardStatus, quality) — 核心入口
+  - computeInterval(easeFactor, repetitions, interval) — 独立 SM-2 公式
+  - 扩展工具: isDue / getReviewStatusText / calculateRetention / predictRetentionRate / batchCalculateNextReview
+
+native-android/app/src/main/java/com/eggli/flashcards/util/Sm2Algorithm.kt
+  原有 SM-2 算法（boolean wasMastered 版本，与前端对齐）
+  - Sm2Record / Sm2Result / DelayLevel
+  - apply() / applyWithDelay() / calculateDelayDays()
+  - calculateSimpleInterval() 固定间隔表备用
+
+# ─────────── 十二补、native-android 关键修复记录 (2026-07-07) ───────────
+
+native-android/app/src/main/java/com/eggli/flashcards/data/model/TestSession.kt
+  测试会话表 —— CRITICAL FIX 1
+  - 新增字段：questionsJson / answersJson / currentIndex / score / startedAt / completedAt
+  - 对应 Web App testSessions 表完整字段
+
+native-android/app/src/main/java/com/eggli/flashcards/data/local/dao/TestSessionDao.kt
+  新增查询：getLatestUncompleted(testType, typeId, userId) / getAllUnfinished(userId)
+  - 支持测试会话状态恢复与未完成会话查询
+
+native-android/app/src/main/java/com/eggli/flashcards/data/model/Card.kt
+  FIX 2：type 字段默认值从 "basic" 修正为 "normal"（与 Web App 对齐）
+
+native-android/app/src/main/java/com/eggli/flashcards/service/DraftService.kt
+  FIX 3：草稿服务完整业务逻辑
+  - createDraft / processDraft / getPendingDrafts / retryFailedDrafts / updateDraftStatus / deleteDraft
+  - 集成 AI 生成卡片、重试机制（max 3 次）
+
+native-android/app/src/main/java/com/eggli/flashcards/data/model/OcrCache.kt
+native-android/app/src/main/java/com/eggli/flashcards/data/local/dao/OcrCacheDao.kt
+  FIX 4：OCR 缓存实体与 DAO
+  - imageHash（SHA-256）唯一索引 / recognizedText / engine / createdAt
+
+native-android/app/src/main/java/com/eggli/flashcards/service/CameraOcrService.kt
+  FIX 4：相机 OCR 服务 —— 新增缓存逻辑
+  - recognizeText(imageUri/Bitmap) 前检查缓存，命中直接返回
+  - 识别成功后自动保存到 ocr_cache
+  - clearOcrCache() 清空缓存方法
+
+native-android/app/src/main/java/com/eggli/flashcards/service/OcrService.kt
+  FIX 4：OCR 服务接口与实现 —— 新增缓存逻辑
+  - recognizeWithPcEngine / recognizeWithAi 前检查缓存
+  - clearOcrCache() 接口方法
+
+native-android/app/src/main/java/com/eggli/flashcards/service/SeedDataService.kt
+  FIX 5：种子数据服务
+  - seedIfNeeded()：首次启动时创建「使用指南」分类 + 示例章节/单元/卡片
+  - 检查已有分类避免重复注入，SharedPreferences 标记种子完成状态
+
+native-android/app/src/main/java/com/eggli/flashcards/data/model/AiCallLog.kt
+native-android/app/src/main/java/com/eggli/flashcards/data/local/dao/AiCallLogDao.kt
+  FIX 6：AI 调用日志实体与 DAO
+  - timestamp / provider / model / inputTokens / outputTokens / latencyMs / success / errorMessage / promptPreview
+
+native-android/app/src/main/java/com/eggli/flashcards/service/AiCallLogService.kt
+  FIX 6：AI 调用日志服务
+  - logCall() 记录每次调用 / getRecentCalls() / getRecentFailures() / clearOldLogs(days) / clearAllLogs()
+
+native-android/app/src/main/java/com/eggli/flashcards/ui/viewmodel/UnitTestViewModel.kt
+  FIX 7：测试会话状态管理
+  - init 时 restoreSessionIfNeeded() 恢复未完成的测试
+  - answerQuestion() 中保存 answers 映射与进度
+  - saveSessionState() 序列化 questions/answers/currentIndex/score 到 TestSession
+  - completeTestSession() 完成时计算百分制得分并标记 isCompleted
+  - saveProgressOnExit() 用户退出时自动保存进度
+
+native-android/app/src/main/java/com/eggli/flashcards/data/local/AppDatabase.kt
+  数据库版本升级 1 -> 2
+  - 新增实体：OcrCache / AiCallLog
+  - TestSession 实体字段扩展
+  - MIGRATION_1_2：ALTER TABLE + CREATE TABLE 完整迁移脚本
+
+native-android/app/src/main/java/com/eggli/flashcards/di/DatabaseModule.kt
+  Hilt 模块更新
+  - 注册 MIGRATION_1_2（替代原 fallbackToDestructiveMigration）
+  - 新增 provideOcrCacheDao() / provideAiCallLogDao()
+
+native-android/app/src/main/java/com/eggli/flashcards/data/repository/FlashcardRepository.kt
+  仓库层更新
+  - 注入 OcrCacheDao / AiCallLogDao
+  - 新增 getLatestUncompletedTestSession() / getAllUnfinishedTestSessions()
+
+native-android/app/src/main/java/com/eggli/flashcards/data/local/dao/CategoryDao.kt
+  新增 getAllSnapshot() 同步查询方法（供 SeedDataService 使用）
+
+# ─────────── 十三、原生 iOS 项目 (native-ios/) ───────────
+# 更新: 2026-07-07
+
+native-ios/FlashCards/Services/CloudbaseAuthService.swift
+  Cloudbase 认证服务 iOS 版（URLSession）
+  - AuthState 枚举: signedIn / signedOut / otpRequired / authError
+  - CloudbaseUser / CloudbaseSession Codable 结构体
+  - CloudbaseAuthServiceProtocol: signInWithPassword / signUp / verifyOtp / signOut / getCurrentUser / getSession / refreshSession
+  - onAuthStateChange 闭包回调（SwiftUI 友好）
+  - KeychainHelper 内部类: 安全钥匙串存储令牌
+  - UserDefaults 存储过期时间
+
+native-ios/FlashCards/Services/CloudbaseDatabaseService.swift
+  Cloudbase RDB REST API 封装 iOS 版
+  - WhereCondition / OrderBy / DbResult<T>
+  - CloudbaseDatabaseServiceProtocol: select / insert / insertBatch / upsert / update / delete
+  - URLComponents 拼接查询参数，async/await 并发
+  - Bearer JWT 认证头
+
+native-ios/FlashCards/Utils/EbbinghausAlgorithm.swift
+  艾宾浩斯 + SM-2 算法 iOS Swift 版
+  - ReviewQuality 枚举 (0-5)
+  - ReviewResult 结构体
+  - calculateNextReview / applyReviewResult / computeInterval
+  - 扩展工具: isDue / getReviewStatusText / calculateRetention / predictRetentionRate / batchCalculateNextReview
+  - Double.roundedToTwoDecimals() 扩展
+
+# ─────────── 十四、原生项目主题与跨切配置 (2026-07-07) ───────────
+
+native-android/app/src/main/java/com/eggli/flashcards/ui/theme/Color.kt
+  金属/冷色调色板 + 深色主题 + 发光阴影 + 玻璃拟态颜色定义
+  - md_theme_light_* / md_theme_dark_*: Material3 主题色（深色背景更深，避免过亮）
+  - Metallic{Silver/Blue/Purple/Cyan/Dark}Start/End/Mid: 金属渐变色
+  - Glow{Blue/Purple/Cyan/Amber/Red/Green}: 发光阴影色（强弱两档）
+  - EyeProtection*: 护眼模式暖色覆盖
+  - Glass{Light/Dark/BorderLight/BorderDark}: 玻璃拟态半透明色
+
+native-android/app/src/main/java/com/eggli/flashcards/ui/theme/Theme.kt
+  EggliTheme / EggliThemeWithManagers 组合主题
+  - 支持 dynamicColor（默认关闭）
+  - eyeProtectionEnabled: 暖色覆盖层
+  - backgroundTransparency: 背景透明度调节
+  - fontSizeMultiplier: 全局字体缩放
+  - LocalEyeProtectionEnabled / LocalBackgroundTransparency CompositionLocal
+  - EggliThemeWithManagers: 自动组合 ThemeManager + FontSizeManager
+
+native-android/app/src/main/java/com/eggli/flashcards/ui/theme/Type.kt
+  Material3 Typography 默认定义（display/body/title/label 全档位）
+
+native-android/app/src/main/java/com/eggli/flashcards/util/FontSizeManager.kt
+  系统级字体大小管理器
+  - FontSizeLevel 枚举: small(0.875x)/medium(1.0x)/large(1.125x)/extraLarge(1.25x)
+  - SharedPreferences 持久化 (font_size_prefs)
+  - CompositionLocal: LocalFontSizeMultiplier / LocalFontSizeManager
+  - WithFontSizeScaling: 通过 LocalDensity 实现全局字体缩放
+  - AppFontSizes: @Composable 语义化字号获取 (small/medium/large/extraLarge/title/headline)
+
+native-android/app/src/main/java/com/eggli/flashcards/util/ThemeManager.kt
+  系统级主题管理器
+  - ThemeMode 枚举: light/dark/auto
+  - SharedPreferences 持久化 (theme_prefs)
+  - eyeProtectionEnabled: 护眼模式开关
+  - backgroundTransparency: 背景透明度 (0.3~1.0)
+
+native-android/app/src/main/res/values/themes.xml
+  Light Theme: Theme.Eggli / Theme.Eggli.Splash
+  - Material.Light.NoActionBar 父主题
+  - 透明状态栏/导航栏，白色窗口背景 #FFF8FAFC
+
+native-android/app/src/main/res/values-night/themes.xml
+  Dark Theme: Theme.Eggli / Theme.Eggli.Splash
+  - Material.NoActionBar 父主题
+  - 黑色窗口背景 #FF020617，适配深色文字色
+
+native-android/app/src/main/java/com/eggli/flashcards/MainActivity.kt
+  应用入口 Activity
+  - 初始化 ThemeManager + FontSizeManager
+  - enableEdgeToEdge() 边缘到边缘渲染
+  - EggliThemeWithManagers 包裹整棵 UI 树
+  - WindowInsets 处理（systemBars 自动内边距）
+
+# ─────────── Android Compose 页面 (ai-flashcard-app/android, 2026-07-07) ───────────
+
+android/app/src/main/java/com/eggli/flashcards/ui/screen/CategoryScreen.kt
+  分类详情页（对齐 React Category.jsx）
+  - CategoryScreen: Scaffold 布局 (Header + 多选工具栏 + LazyColumn + InputBar)
+  - Header: 返回按钮、分类名称可编辑、全部展开/收起、编辑名称按钮
+  - 多选工具栏: sticky 顶部，批量收藏/移动/删除/退出多选
+  - 单元概览面板: 可折叠，显示章节统计、新建章节按钮
+  - 章节分组: ChapterGroup 组件（箭头 rotate 动画）
+  - 单元分组: UnitGroup 组件（展开/折叠卡片列表）
+  - ChapterGroup(): 章节标题栏 + AnimatedVisibility 内容区
+  - UnitGroup(): 单元头部 + 卡片列表展开
+  - 空状态: 文档图标 + 提示文字
+  - 新建章节对话框、删除确认对话框
+  - 依赖: CategoryViewModel, CardItemCompact, InputBarCompose
+
+android/app/src/main/java/com/eggli/flashcards/ui/viewmodel/CategoryViewModel.kt
+  分类详情页 ViewModel（Hilt 注入）
+  - categoryId: SavedStateHandle 获取路由参数
+  - category/chapterName/editingName: 分类信息与编辑状态
+  - chapters/units/cards: Flow 列表
+  - chapterGroups: combine 合并章节+单元+卡片数据
+  - ungroupedUnitsWithCards: 未分组单元
+  - collapsedChapters/expandedUnitIds: 折叠状态
+  - selectionMode/selectedCardIds: 多选模式
+  - flippedCardIds: 卡片翻转状态
+  - bookmarkedCardIds: 书签状态
+  - overviewExpanded: 概览面板折叠
+  - 方法: toggleChapterCollapse, expandAllChapters, collapseAllChapters
+  - 方法: enterSelectionMode, toggleCardSelection, exitSelectionMode
+  - 方法: batchDelete, batchMove, batchBookmark
+  - 方法: addChapter, deleteChapter, renameChapter
+  - 方法: addUnit, renameUnit, deleteUnit
+  - 方法: toggleCardFlip, toggleBookmark
+  - 数据类: UnitWithCards, ChapterWithUnits (顶级定义)
+
+android/app/src/main/java/com/eggli/flashcards/ui/components/CardItemCompact.kt
+  卡片 compact 变体组件（对齐 React CardItem compact 模式）
+  - CardItemCompact(): combinedClickable 支持单击翻转/长按多选
+  - 顶部栏: 问题/答案 pill 标签 + 多选勾选 + 收藏心形
+  - 正文区: heightIn(max=320dp), maxLines=10
+  - 底部操作栏: 查看答案/返回问题 + 收藏 + 更多操作
+  - CardColorStripe(): 左侧 6dp 色条装饰
+
+android/app/src/main/java/com/eggli/flashcards/ui/components/InputBarCompose.kt
+  底部输入栏 Compose 组件（对齐 React InputBar）
+  - 半透明 surface 背景 + 顶部阴影
+  - 展开工具栏按钮 + BasicTextField (圆角 16dp, maxLines=3)
+  - 麦克风按钮 (44x44dp 圆形) + 发送按钮 (44x44dp, GlowColor)
+  - AnimatedVisibility 展开工具栏面板
+
+android/app/src/main/java/com/eggli/flashcards/ui/navigation/AppNavHost.kt
+  - Routes.CATEGORY 注册为 CategoryScreen(navController)
+  - 替换原 PlaceholderScreen("分类详情", ...)
+  iOS 主题管理器（ObservableObject 单例）
+  - ThemeMode: light/dark/auto（中文显示名）
+  - UserDefaults 持久化
+  - effectiveColorScheme / isDarkMode 计算属性
+  - eyeProtectionEnabled: 护眼模式（全局暖色覆盖）
+  - backgroundTransparency: 背景透明度
+  - Color 扩展: 金属渐变色 / 发光色 / 护眼色 / 玻璃拟态色 / 语义色 / 深色背景色
+  - Color(hex:) 初始化器
+  - EyeProtectionModifier / .eyeProtectionOverlay() View 扩展
+
+native-ios/FlashCards/Utils/FontSizeManager.swift
+  iOS 字体大小管理器（ObservableObject 单例）
+  - FontSizeLevel: small/medium/large/extraLarge（中文显示名 + multiplier）
+  - UserDefaults 持久化
+  - scaled(_:) / scaledFont(size:weight:) 方法
+  - EnvironmentValues.fontSizeManager 环境键
+  - ScaledFont ViewModifier / .scaledFont() View 扩展
+  - AppFontSize 语义化字号枚举
+
+native-ios/FlashCards/Views/Components/AdaptiveText.swift
+  自适应字体 Text 包装组件
+  - 通过 @EnvironmentObject 读取 FontSizeManager 自动缩放
+  - 语义化构造器: .small/.medium/.large/.extraLarge/.title/.headline
+  - 支持 weight/color/alignment/lineLimit/minimumScaleFactor
+
+native-ios/FlashCards/Views/Components/GlassCard.swift
+  玻璃拟态卡片组件
+  - GlassCard<Content>: 支持圆角/内边距/边框/阴影全定制
+  - .ultraThinMaterial + 半透明填充 + 细边框
+  - 自动适配深色/浅色模式
+  - GlassPanel ViewModifier / .glassCard() View 扩展
+
+native-ios/FlashCards/Views/Components/MetallicButton.swift
+  金属渐变按钮组件
+  - MetallicButton: 5 种金属变体 (blue/purple/cyan/silver/dark)
+  - 3 种尺寸 (small/medium/large)，支持图标 + 全宽模式
+  - MetallicButtonStyle: 渐变填充 + 金属高光 + 发光阴影 + 按压缩放动画
+  - MetallicOutlineButton: 描边风格金属按钮
+
+native-ios/FlashCards/FlashCardsApp.swift
+  iOS 应用入口
+  - ThemeManager + FontSizeManager 作为 @StateObject 注入环境
+  - .preferredColorScheme(themeManager.effectiveColorScheme)
+  - .eyeProtectionOverlay() 全局护眼覆盖
+  - AppDelegate.applyThemeAppearance(): 导航栏/标签栏外观同步主题
+
+native-ios/FlashCards/Info.plist.placeholder.md
+  Info.plist 配置说明文档（中文权限描述）
+  - NSCameraUsageDescription: 相机/OCR
+  - NSMicrophoneUsageDescription: 麦克风/语音输入
+  - NSPhotoLibraryUsageDescription: 相册/选图
+  - NSPhotoLibraryAddUsageDescription: 保存图片
+  - NSSpeechRecognitionUsageDescription: 语音识别/背诵评测
+  - UIUserInterfaceStyle: Automatic
+  - 完整 Info.plist XML 模板

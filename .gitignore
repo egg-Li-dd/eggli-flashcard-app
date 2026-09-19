@@ -1,0 +1,78 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.*
+!.env.example
+
+# 构建产物目录（含嵌入的 Publishable Key，禁止提交）
+分发包/
+
+# Android 签名密钥文件
+*.keystore
+*.jks
+keystore.properties
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ===================================================
+# 以下规则于 2026-09-19 补充，用于首次上传前排除大体积产物
+# ===================================================
+
+# Android 构建产物（可由 gradlew 重新生成）
+android/build/
+android/app/build/
+android/.gradle/
+android/.kotlin/
+android/local.properties
+
+# Capacitor 同步产物（可由 npx cap sync 重新生成，约 30MB / 100 文件）
+android/app/src/main/assets/public/
+
+# 第三方预编译二进制：libtailscale.aar 单文件 66MB，不纳入版本库
+android/app/libs/*.aar
+android/app/libs/*.jar
+
+# 安装包（释放版 APK 约 92MB，超出 GitHub 单文件建议上限，另行分发）
+*.apk
+*.aab
+
+# 本地运行日志与调试截图
+localhost-*.log
+screen_test*.png
+
+# ===================================================
+# 🔴 安全：根目录一次性数据库运维脚本
+# check_*.mjs / create_*.mjs / test_*.mjs / 模拟执行完整版.mjs 等
+# 共 15 个文件中明文写有 CloudBase service_role 密钥（最高权限、绕过 RLS），
+# 严禁提交到任何远端仓库。这些脚本不属于应用源码，仅本地临时使用。
+# 仅放行 3 个必要的构建配置。
+# ===================================================
+/*.mjs
+/*.js
+!/vite.config.js
+!/vitest.config.js
+!/eslint.config.js
+
+# 本地临时数据片段
+/_db_temp.txt
+/_line1.txt

@@ -1,0 +1,947 @@
+# 易报错事项记录
+# 更新时间: 2026-06-15
+
+============================================================
+【SQL 视图列数不兼容 - "42P16: cannot drop columns from view"】
+============================================================
+现象：在 Supabase SQL Editor 执行更新 SQL 时报：
+      "ERROR: 42P16: cannot drop columns from view"
+      中文翻译："无法执行 SQL 查询。错误：42P16：无法从视图中删除列。"
+
+根因：云端 `diagnostic_view` 视图最初是 v3 基线版本（11 列：user_id,
+      email, category_count, unit_count, card_count, mastered_count,
+      review_count, bookmark_count, wrong_answers_count, profile_count,
+      settings_count）。v3.6 增量更新要把它替换为 14 列（增加
+      test_questions_count, test_records_count, test_sessions_count），
+      PostgreSQL 的 `CREATE OR REPLACE VIEW` 不允许修改列集合
+      （即使只是末尾新增），所以抛 42P16。
+
+修复方法（按推荐顺序）：
+  方法 1：执行 `需执行的 SQL（最小修复）.txt`（推荐，兜底最强）
+    · 第 1 节 DO 块三次兜底：DROP CASCADE → RENAME → REVOKE+DROP
+    · 第 2 节 CREATE VIEW 创建 14 列最终版（无 CREATE OR REPLACE）
+    · 第 3 节独立追加 unit_id / category_id + 2 个索引
+    · 适用：任意一次更新失败后的回退修复，独立可执行
+  方法 2：执行 `需执行的 SQL（更新版）.txt`（首次更新时使用）
+    · 第 0 节 DO 块 DROP CASCADE（失败时 RENAME）
+    · 第 5 节 CREATE VIEW 而非 CREATE OR REPLACE VIEW
+  方法 3：执行 `需执行的 SQL（完整版）.txt`（全新安装）
+    · v3 段：DO 块 DROP CASCADE（失败时 RENAME）
+    · v3.6 段：再 DROP CASCADE + CREATE VIEW 14 列
+
+延伸注意：每次升级 SQL 时，diagnostic_view 都要走"先 DROP/CASCADE，
+      再 CREATE VIEW"流程，不要直接用 `CREATE OR REPLACE VIEW`。
+      报错后先单跑 `需执行的 SQL（最小修复）.txt` 把视图清干净，
+      再跑完整更新。
+
+诊断步骤（如果上面三个方法都失败）：
+  1. 在 SQL Editor 跑：
+        SELECT * FROM pg_views WHERE viewname = 'diagnostic_view';
+     查看云端 diagnostic_view 的列定义。
+  2. 如果 viewname 不同（被改名为 diagnostic_view_obsolete_<时间戳>），
+     那是 DO 块走 RENAME 成功的结果，直接跑方法 1 的第 2 节即可。
+  3. 如果还是报 42P16，先执行：
+        DROP TABLE IF EXISTS public.diagnostic_view CASCADE;
+     （视图会被 DROP TABLE 一起级联删除），再跑 CREATE VIEW。
+
+============================================================
+【SQL 列缺失索引 - "42703: column does not exist"】
+============================================================
+现象：在 Supabase SQL Editor 执行 v3.8 SQL 时报：
+      "ERROR: 42703: column 'unit_id' does not exist"
+      中文翻译："错误：42703：列 'unit_id' 不存在"
+
+根因：完整版 SQL 的 test_sessions 表用 `CREATE TABLE IF NOT EXISTS`
+      创建，但 v3.7 已建表的云端已经有 test_sessions（v3.7 schema，
+      没有 unit_id / category_id 列）。`CREATE TABLE IF NOT EXISTS`
+      检测到表已存在就跳过，不会给已存在的表加新列。
+      紧接着的 `CREATE INDEX ... ON test_sessions (unit_id)` 找不到
+      unit_id 列，于是抛 42703。
+
+修复方法（写入 需执行的 SQL（完整版）.txt 第 468~470 行 和
+            需执行的 SQL（最小修复）.txt 第 3 节）：
+  1. 完整版：在 `CREATE TABLE IF NOT EXISTS` 之后加 2 行
+     `ALTER TABLE test_sessions ADD COLUMN IF NOT EXISTS unit_id/category_id`，
+     再执行 CREATE INDEX。
+  2. 最小修复：第 3 节用 DO 块 + information_schema 查询判断列是否存在，
+     只在不存在时才 ADD COLUMN，确保列先存在再建索引。
+  3. 更新版：第 3 节本来就有 `ALTER TABLE ADD COLUMN IF NOT EXISTS`，
+     顺序也正确（先 ADD COLUMN 再 CREATE INDEX），无此问题。
+
+诊断步骤（如果执行后还是报 42703）：
+  1. 在 SQL Editor 跑：
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'test_sessions';
+     确认 unit_id 和 category_id 是否存在。
+  2. 如果不存在，先单独跑：
+        ALTER TABLE public.test_sessions ADD COLUMN IF NOT EXISTS unit_id text;
+        ALTER TABLE public.test_sessions ADD COLUMN IF NOT EXISTS category_id text;
+     再跑 CREATE INDEX。
+  3. 如果存在（说明列加了但 IF NOT EXISTS 路径未生效），检查是否有触发器
+     或 RLS 策略导致列被隐藏，尝试：
+        SET LOCAL row_security = off;
+        ALTER TABLE ... ADD COLUMN ...;
+
+============================================================
+【生产 APK 无法连接 Supabase - 启动期临时失败 / TLS 证书主机名不匹配】
+============================================================
+现象：生产 APK 登录/同步时报“无法连接到 Supabase 服务器”，电脑侧使用同一
+      `.env` 配置测试 HTTPS 请求也返回 `fetch failed`。
+
+本次排查结果：
+  - `capacitor.config.json` 已删除 `server.url`，生产模式配置正确。
+  - `.env` 中的 `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` 能被 Vite 读取。
+  - `dist` 打包产物已包含 Supabase 项目地址，不是环境变量未打包。
+  - AndroidManifest 已有 `android.permission.INTERNET`。
+  - DNS 能解析、443 端口能连通，但 HTTPS 层报：
+    `ERR_TLS_CERT_ALTNAME_INVALID`
+    `Hostname/IP does not match certificate's altnames`
+
+根因判断：当前网络环境把 Supabase 项目域名解析/转发到了证书不匹配的服务器，
+      常见原因是 DNS 污染/劫持、代理证书异常、公司/校园网 HTTPS 拦截，
+      或 Supabase 在当前网络下访问不稳定。此类问题不能通过前端代码绕过，
+      也不应关闭 HTTPS 证书校验。
+
+处理方法：
+  1. 手机切换到另一种网络测试：移动数据 / 另一 Wi-Fi / 热点。
+  2. 手机或路由器更换可信 DNS，例如 1.1.1.1、8.8.8.8、223.5.5.5。
+  3. 如果使用代理/VPN，关闭后重试；如果当前网络无法访问 Supabase，则换可访问 Supabase 的代理线路。
+  4. 用手机浏览器直接打开 Supabase 项目域名，若浏览器也证书异常或无法打开，说明不是 APK 代码问题。
+  5. 网络恢复后重新打开 APK 测试登录/同步，无需重新打包，除非配置文件有改动。
+
+补充现象：APK 刚打开的一段时间内总是提示“无法连接到服务器”，不论什么网络，
+      过几秒或稍等一会儿又能登录成功。
+
+补充根因：Capacitor WebView 刚启动时，网络栈、DNS、TLS 握手或 Supabase SDK
+      首次请求可能短暂不可用。原逻辑首次 `fetch failed` 就立即显示失败，
+      导致用户看到误导性错误；实际稍后重试即可成功。
+
+补充修复：
+  1. src/services/supabase.js 新增 `isTransientSupabaseNetworkError()`，
+     只识别 failed to fetch / fetch failed / network error / timeout 等临时网络错误。
+  2. src/services/supabase.js 新增 `runSupabaseWithStartupRetry()`，
+     对启动期临时网络错误进行最多 3 次渐进重试。
+  3. src/pages/Account.jsx 的登录、注册、忘记密码接入重试；
+     重试期间显示“云端正在建立连接，正在自动重试...”，最终仍失败才提示用户。
+  4. 账号密码错误、邮箱已注册、API Key 无效等业务错误不重试，避免误导用户。
+
+============================================================
+【云端下载后卡片孤立 - 账号有数量但记录/背诵为空】
+============================================================
+现象：账号页显示总卡片数，记录页分类下显示 0 张或只显示部分卡片；
+      背诵页选择分类后没有卡片。
+
+根因：账号页直接统计 `db.cards.count()`；记录页和背诵页依赖
+      `cards.categoryId + cards.unitId` 与 `categories/units` 的关系。
+      单表下载 cards 或异常同步后，可能出现卡片的 unitId 指向本地不存在的
+      单元，或 categoryId 缺失，导致卡片成为“孤立卡片”。
+
+修复方法：
+  1. src/services/db.js 新增 `repairCardRelationsAfterImport()`。
+  2. src/services/sync.js 在全量下载、categories/units/cards 单表下载后调用。
+  3. src/context/AppContext.jsx 在 `loadCategories()` 中调用，修复历史已下载异常数据。
+  4. 无法匹配原父级时，创建「云端下载分类」和「云端下载卡片」恢复入口。
+
+============================================================
+【NewCardPanel - Hooks 顺序不一致引发的崩溃】
+============================================================
+现象：React 报 "Rendered more hooks than during the previous render"
+      第 13 个 hook useMemo 在 visible=false 时未执行
+
+根因：NewCardPanel 中 `if (!visible) return null` 写在 useEffect 之后、
+      useMemo 之前。visible=false 时只有 12 个 hooks，visible=true 时
+      有 13 个 hooks，违反了 React Hooks 规则。
+
+修复方法：
+  将 `if (!visible) return null` 移到所有 hooks（useState×10, useRef,
+  useEffect, useMemo）之后，确保每次渲染 hooks 顺序一致。
+
+============================================================
+【种子数据重复创建 - StrictMode 双重执行 useEffect】
+============================================================
+现象：热更新或首次加载出现两个"使用指南"分类
+
+根因：React StrictMode 在开发模式下双重执行 useEffect，旧的逻辑是
+      异步操作完成后才设置 localStorage 标记，导致两次执行都创建种子数据
+
+修复方法：
+  App.jsx seed useEffect: 先设置 localStorage 标记，再执行异步操作；
+  失败时清除标记以允许重试
+
+============================================================
+【热更新浏览器环境 - React 19 onSelectStart 已移除】
+============================================================
+现象：浏览器控制台报 Unknown event handler property "onSelectStart" (ignored)
+      文本选择防御失效
+
+根因：React 19 移除了非标准事件属性 onSelectStart
+
+修复方法（全项目 15 处）：
+  1. 全局 CSS 添加 user-select: none（body），input/textarea 恢复 user-select: text
+  2. 所有 JSX 中移除 onSelectStart={preventTextMenu}，保留 onContextMenu={preventTextMenu}
+
+============================================================
+【热更新浏览器环境 - Capacitor App.addListener remove() 报错】
+============================================================
+现象：TypeError: remove is not a function at handler.remove()
+      发生在 App.jsx backButton 监听清理阶段
+
+根因：浏览器环境 Capacitor App.addListener 返回对象没有 .remove() 方法
+
+修复方法：
+  App.jsx L128: handler.remove() → if (handler && typeof handler.remove === 'function') handler.remove()
+
+============================================================
+【UI 按钮/组件问题 - 2026-06-14 全量排查修复】
+============================================================
+
+1. CloudDataDetail.jsx L494-495 - toCloudRecord() 函数未定义 + supabase 未导入
+   现象：在"云端未更新"筛选视图中点击"上传到云端"按钮报 ReferenceError
+   修复：使用已导入的 addCloudRecord(table, item) 替代裸调 supabase.upsert
+
+2. UnitGroup.jsx L72 - 按钮嵌套按钮（HTML 非法）
+   现象：UnitGroup header 用 <button> 包裹 UnitTestMain 传入的子 <button>（actions），
+   形成 <button><button/></button> 非法嵌套，子按钮点击同时触发父级折叠事件
+   修复：header 从 <button> 改为 <div role="button">，actions 已自带 stopPropagation
+
+3. SettingsMain.jsx - 设置主页缺少"云端同步"入口
+   现象：界面布局设计 4 个入口卡片，代码中 SETTINGS_CATEGORIES 只有 3 个
+   修复：补充云端同步卡片 { id:'cloud', icon:'☁️', path:'/settings/cloud' }
+
+4. StatsDetail.jsx L240 - 使用原生 window.confirm 删除卡片
+   现象：删除二次确认用浏览器原生弹窗，移动端体验差且风格不一致
+   修复：新增 confirmDelete state + ConfirmDialog 组件
+
+5. UnitTestMain.jsx - 缺少长按文本选择防御
+   现象：用户长按页面会弹出系统文本选择菜单
+   修复：添加 preventTextMenu + onContextMenu/onSelectStart 处理
+
+6. WrongQuestionsPage.jsx / QuestionBankPage.jsx 返回按钮不一致
+   现象：使用 "← 返回" 纯文本，其他页面均用 SVG BackArrow 组件
+   修复：统一替换为 BackArrow SVG + settings-back-btn 样式
+
+7. ToastView.jsx - 缺少 'warn' 类型 CSS class
+   现象：调用 showToast(msg, 'warn') 时不会显示警告配色
+   修复：type 判断链中增加 warn 分支
+
+8. StatsDetail 下拉按钮 (▼) 32×30px → CloudDataDetail 筛选 × 按钮字体过小
+   现象：触摸目标不足 44px 最小标准
+   修复：下拉按钮改为 44×44px，× 按钮字体增大到 14px + minWidth/minHeight: 24
+
+9. 弱模型（讯飞星火 Spark Lite）出题畸形
+   现象：分类检测/单元检测 AI 返回的题目出现以下问题：
+         a) 题干本身是完整陈述句（如 "内存RAM的特点是断电后数据会被清空…"）
+            但选项没有 "题干正确/题干错误" 的判断项
+         b) 选项 label 用了判断词或状态词（"正确"/"错误"/"待掌握"），导致 28x28 圆形 label 竖向堆叠显示为 "正/确" "错/误" "待/掌/握"
+         c) 选项 text 是知识点标签（"内存(RAM)的特点"/"外存的特点"），没有陈述句
+         d) 选项 text 重复题干内容（题干是 "内存的特点是断电后数据被清空"，选项 A 也是 "断电后数据被清空"）
+         e) 单选题题干缺少问号或疑问词，不是完整问题
+         f) 多选题题干末尾没有"多选题"/"可多选"标记
+         g) 判断题 options 写成 A/B 选择而非 ["正确","错误"]
+   根因：Spark Lite 等小模型对 prompt 的格式约束遵循度低
+   修复（第一层 - 单次大批量调用 + 严格校验）：
+     1) constants.js TEST_QUESTION_GENERATION_PROMPT_LITE 重写为硬约束 + 正反例对照
+     2) testQuestionService.js 新增 5 层防御：
+        - FORBIDDEN_STATUS_WORDS / FORBIDDEN_JUDGMENT_WORDS 黑名单
+        - KNOWLEDGE_LABEL_PATTERNS 正则
+        - isKnowledgeLabel() 检测
+        - normalizeChoiceLabel() 归一化（1/2/3/4 → A/B/C/D）
+        - normalizeQuestion() 自动修正（字符串数组 → 对象数组；小写 label → 大写；true/false → 正确/错误；判断题题干补"判断以下说法是否正确："前缀）
+        - validateQuestion() 严格校验
+        - jaccardSimilarity() 中 bigram 检测题干-选项/选项-选项冗余
+     3) TestCardItem.jsx truncateLabel() 处理 28x28 长 label 截断
+     4) UnitTestPage.jsx 未作答时禁用 "下一题" 并加提示横幅
+   修复（第二层 - 多次小批量调用架构）：详见下面第 10 条
+
+10. 弱模型单次大批量 prompt 仍偶发畸形 → 改为多次小批量调用
+   现象：即使第一层防御后，仍有少量批次产出畸形题目（弱模型"猜对"格式的概率随输入长度增加而下降）
+   根因：单次 prompt 输入 50 张卡片 + 4 种题型 × 完整正反例 ≈ 2000+ token，弱模型注意力不足以遵循所有约束
+   策略（multi-call architecture）：
+     - 检测到弱模型（isWeakModel(config) === true: iflytek-spark + sparkModel==='lite'）
+       → 改为按"题型 × 卡片批次"多次串行调用
+     - 每次只生成 1 种题型、≤5 张卡片（≈ 300 token 输入），弱模型更易遵循
+     - 拆批策略：cards 按 LITE_BATCH_SIZE=5 拆 N 批；前 2 批 4 种题型全出，后续批降级为单选+判断
+     - 调用顺序：默认串行（避免限流）；可通过 options.parallel=true 开启并行
+     - 容错：单批失败不中断其它批；onBatchComplete 回调实时显示每批进度
+     - 汇总：所有批结果合并 → stem 相似度去重 → 进入原有"存储到数据库"流程
+   关键文件：
+     - constants.js: TEST_QUESTION_LITE_SINGLE/MULTI/TRUE_FALSE/FILL（4 个单题型模板）
+     - testQuestionService.js: isWeakModel / buildLitePromptByType / generateQuestionsForWeakModel
+     - updateQuestionBank: isWeakModel 分流，强模型走原逻辑（兼容）
+   测试：src/__tests__/testQuestionMultiCall.test.js 30 个用例（覆盖模型识别/拆批/prompt构建/调用/容错/集成）
+   后续若仍有少量畸形题目，优先加强：① 单题型 prompt 硬约束 ② validateQuestion 规则 ③ 单批卡片数上限
+   后续若发现弱模型识别的 sparkModel 名称变化（如新增 spark-lite-v2），修改 isWeakModel 即可
+
+11. normalizeQuestion 中判断题 options 字符替换 bug
+   现象：原本用 `text.replace(/[是与否对错]/g, m => ({'是':'正确','错':'错误'}[m]||m))` 替换
+   问题：对已经是"错误"的字符串，'错' 被替换为 '错误'，导致 '错误' 变 '错误误'，校验被拦截
+   修复：改为整体映射 normTF(v)：v === '正确'/'错误' 原样返回；'是/对/yes/true' → '正确'；'否/no/false' → '错误'
+   测试：testQuestionValidation.test.js 已有判断题相关用例
+
+============================================================
+【TDZ 错误 - "Cannot access 'X' before initialization"】
+============================================================
+现象：点击分类进入记录页面时报错 "Cannot access 'J' before initialization"
+
+根因：useEffect 依赖数组中引用了在其声明位置之后才定义的变量（useCallback 函数）。
+JavaScript class/const/let 有 TDZ（暂时性死区），在声明前访问会抛出 ReferenceError。
+
+典型错误写法：
+  useEffect(() => { ... loadUnits() ... }, [id, loadUnits])  // 第 100 行
+  const loadUnits = useCallback(...)                           // 第 150 行 ← 声明在 useEffect 后面
+
+修复方法：
+  将 useEffect 移到其所依赖的所有变量声明之后。确保 useEffect 的依赖数组中的
+  每一个变量（尤其是 useCallback 函数）都在 useEffect 之前完成声明。
+
+已修复位置：
+  - Category.jsx: syncEngine useEffect 从 loadUnits 声明前移到声明后（L182）
+
+排查结果：
+  - Category.jsx 已修复（syncEngine useEffect 移到 loadUnits 声明之后）
+  - Memorize.jsx 首屏 useEffect 调用 loadCards 存在类似风险，已移到 loadCards 声明之后（L260）
+  - 其他页面文件无此问题
+
+============================================================
+【syncEngine API 方法名不匹配 - addListener/removeListener 不存在】
+============================================================
+现象：点击背诵Tab或进入分类页时报错（与 TDZ 错误连锁出现）
+
+根因：syncEngine 实际 API 是 onSyncStatusChange(callback) 返回 unsubscribe 函数，
+但代码中误用了不存在的 addListener()/removeListener()。
+
+同时回调参数格式不匹配：
+  - 代码假设: event.detail.success（CustomEvent 格式）
+  - 实际格式: { syncing: boolean, direction: string|null }（直接对象）
+
+修复方法：
+  - syncEngine.addListener(listener) → syncEngine.onSyncStatusChange(listener)
+  - syncEngine.removeListener(listener) → 使用 onSyncStatusChange 返回的 unsubscribe 函数
+  - 回调参数从 event.detail.success 改为检查 status.syncing === false
+
+已修复位置：
+  - Category.jsx L197-198
+  - Memorize.jsx L185-186
+
+============================================================
+【IndexedDB - testQuestions 表缺少 testType+targetId 复合索引】
+============================================================
+现象：[testQuestionService] updateQuestionBank 失败: KeyPath [testType+targetId]
+      on object store testQuestions is not indexed
+
+根因：getTestQuestions(testType, targetId) 使用 Dexie where({ testType, targetId })
+      查询，需要 [testType+targetId] 复合索引，但 v3 schema 中 testQuestions 表
+      只有 categoryId/unitId/cardId/type/userId 索引，缺少 testType 和 targetId。
+
+修复方法：
+  db.js: 新增 v4 版本升级，testQuestions schema 增加 testType, targetId,
+  [testType+targetId] 索引。
+
+注意事项：
+  已有浏览器环境需清除 IndexedDB（DevTools → Application → IndexedDB →
+  删除 AIFlashCardsDB_v2），再刷新页面触发 v4 升级。
+
+============================================================
+【卡片生成分类单元匹配错位 - unitIndex off-by-one 错误】
+============================================================
+现象：AI 日志显示卡片生成和分类归类均成功调用，但 NewCardPanel 弹出的卡片
+所属单元匹配错误（第1个单元的卡片被归入第2个单元，最后一个单元卡片丢失）。
+
+根因：aiService.js classifyCardsByCategoryContent 中，提示词告知 AI 使用
+1-based 单元编号（【单元1】、【单元2】...），但代码用 unitIdsByIndex[item.unitIndex]
+按 0-based 数组索引访问，导致所有单元匹配偏移了1位。
+
+修复方法：
+  - aiService.js L370: unitIdsByIndex[item.unitIndex] → unitIdsByIndex[item.unitIndex - 1]
+
+关联修复：
+  - Category.jsx handleGenerate: API Key 预检失败时 return 前未调用 resetLoading(),
+    导致 loading 状态永久为 true；已添加 resetLoading() 调用
+
+============================================================
+【薄弱知识点显示"未知知识点" - 字段命名不兼容】2026-06-20 新增
+============================================================
+现象：单元检测结束后的 AI 评测界面，薄弱知识点 TOP5 全部显示"未知知识点"，
+      无法显示实际的知识点名称。
+
+根因：testGradingService.js 的 computeWeakPoints 函数使用
+      q?.knowledge_point || q?.front 获取知识点名称，但 UnitTestPage.jsx
+      传入 gradeTest 的题目对象使用驼峰命名 knowledgePoint 和题干字段 stem，
+      与函数期望的下划线命名 knowledge_point 和卡片正面 front 不一致，
+      导致知识点字段为 undefined，回退显示"未知知识点"。
+
+修复方法：
+  - testGradingService.js computeWeakPoints: 兼容 4 种字段命名
+    q?.knowledgePoint || q?.knowledge_point || q?.stem || q?.front || '未知知识点'
+  - testGradingService.js gradeTest 的 safeQ: 同步兼容两种命名
+    knowledge_point: q.knowledge_point || q.knowledgePoint || null
+
+延伸注意：前端题目对象存在两种字段命名风格（驼峰 vs 下划线），任何从题目
+对象读取字段的代码都应同时兼容两种命名，避免类似回退问题。
+
+============================================================
+【主题筛选后章节不显示 - chaptersMap 被覆盖】2026-06-20 新增
+============================================================
+现象：在单元检测入口页，选择某个主题后，该分类下的章节列表变为空白，
+      无法显示对应章节。
+
+根因：UnitTestMain.jsx 的 handleTopicSelect 在选择主题时，调用
+      getChaptersByTopic(topicId) 并用结果覆盖 chaptersMap[catId]。
+      如果章节的 topicId 字段未设置或查询返回空，chaptersMap[catId]
+      被替换为空数组，导致章节列表消失。
+
+修复方法：
+  - handleTopicSelect 仅更新 selectedTopicMap[catId] = topicId
+  - chaptersMap[catId] 始终保持该分类的全部章节
+  - 渲染层通过 chaptersMap[cat.id]?.filter(ch => ch.topicId === selectedTopicMap[cat.id])
+    完成筛选
+
+延伸注意：筛选状态应与数据源分离，不要用筛选结果覆盖原始数据。
+
+============================================================
+【章节测试无难度选择 - handleChapterTest 缺失弹窗】2026-06-20 新增
+============================================================
+现象：点击章节测试按钮后，直接开始测试，没有难度选择弹窗，
+      且 UnitTestPage 的 mode=chapter 加载逻辑缺失。
+
+根因：
+  1. UnitTestMain.jsx handleChapterTest 直接调用 updateQuestionBank，
+     未显示难度选择弹窗（与单元/分类检测不一致）
+  2. UnitTestPage.jsx loadQuestions 未处理 mode === 'chapter' 分支
+  3. typeId、recordType、难度筛选、会话检查均未处理 chapter 模式
+
+修复方法：
+  - handleChapterTest: 改为 setPendingTestConfig + setShowDifficultyModal(true)
+  - UnitTestPage loadQuestions: 新增 mode === 'chapter' → getTestQuestionsByChapter
+  - typeId: mode === 'chapter' → chapterIdParam
+  - recordType: mode === 'chapter' → 'chapter_test'
+  - 难度筛选: 条件增加 mode === 'chapter'
+  - 会话检查: 新增 mode === 'chapter' → getTestQuestionsByChapter
+
+延伸注意：新增测试模式时，需同步检查 UnitTestPage 的 6 个分支：
+  loadQuestions / typeId / recordType / 难度筛选 / 会话检查 / 错题记录
+
+============================================================
+【API Key 预检误判 - testAiConnection 返回值类型变更】
+============================================================
+现象：配置好 DeepSeek API 后，点击生成卡片时报"API Key 验证失败"，
+      但设置页测试连接显示成功。
+
+根因：将 deepseek.js testApiConnection 返回值从 true 改为
+      { ok: true, tokens }（支持花费统计），但 Category.jsx 
+      handleGenerate 的预检查仍用 preCheckResult !== true 判断，
+      对象 { ok: true } !== true，被误判为失败。
+
+修复方法：
+  Category.jsx L285: preCheckResult !== true
+    → !(preCheckResult && preCheckResult.ok)
+  
+  兼容布尔值和对象两种返回格式。
+  注意：Settings.jsx handleTest 已用 (result.ok === true) 判断，无需修改。
+
+============================================================
+【内置浏览器预览容器日志 - preload-browserView / getThemeColors】
+============================================================
+现象：trae-preview 控制台出现 3 条日志：
+      Unable to load preload script: ...preload-browserView.js
+      ENOENT: no such file or directory, open ...preload-browserView.js
+      [getThemeColors] TypeError: Cannot destructure property 'exportedColors' of 'undefined'
+
+判断：这些日志来自 TRAE 内置预览容器/Electron BrowserView 的 preload 与主题注入流程，
+      不是 Vite 应用业务代码、React 组件或 Supabase/IndexedDB 逻辑直接抛出的错误。
+
+处理方法：
+  若页面能正常加载、交互正常、App 控制台没有业务报错，可暂时忽略。
+  排查业务问题时优先关注来源为 localhost:5173、src/、组件文件或接口请求的错误。
+
+============================================================
+【DeepSeek 模型名已弃用 - deepseek-chat → deepseek-v4-pro】
+============================================================
+现象：报错 "The supported API model names are deepseek-v4-pro or deepseek-v4-flash,
+      but you passed deepseek-chat"
+
+根因：DeepSeek API 已弃用旧模型名 deepseek-chat / deepseek-reasoner，
+      只接受 deepseek-v4-pro / deepseek-v4-flash。
+
+修复方法：
+  1. 更新 src/utils/constants.js 的 MODELS 列表为新模型名
+  2. 替换所有 deepseek-chat 默认值为 deepseek-v4-pro（共 12 处：
+     constants.js / aiService.js / deepseek.js / testGradingService.js / InputBar.jsx）
+  3. AppContext.jsx 新增 localStorage 自动迁移：
+     deepseek-chat → deepseek-v4-pro, deepseek-reasoner → deepseek-v4-flash
+
+类似问题复现时直接检查是否又有新的 hardcoded 旧模型名或 API 再次升级模型名。
+
+=== AI 知识点提取标题/内容分离（截断） ===
+现象: 输入"1. 软件两大类别：系统软件和应用软件"，AI 只提取"1. 软件两大类别"作为知识点，
+      丢失了后面的"系统软件和应用软件"内容。
+根因: KNOWLEDGE_POINT_EXTRACTION_PROMPT 中"按编号列表拆分"导致 AI 将编号标题与内容
+      拆成两条独立知识点。
+解决:
+  1) 优化 prompt：新增第5条"禁止标题分离"规则，明确编号/标题须与其说明内容合并为一条完整知识点
+  2) 在 KnowledgePointConfirm 弹窗中新增"查看原始输入文本"折叠区，让用户可对比原始输入
+     判断 AI 提取是否完整，手动编辑补充
+  3) Category.jsx 通过 kpConfirmConfig 传递 rawText 到确认弹窗
+
+ 额外坑：CardItem.jsx 的 handleRegenerate 调用 aiService.regenerateCard() 时
+ 第 3/4 参数 (model / aiServiceMode) 顺序颠倒，导致 aiServiceMode="deepseek" 
+ 被当成模型名传给 API。修：把调用顺序对齐函数签名 regenerateCard(kp, apiKey, 
+ aiServiceMode, model, sparkApiKey, sparkApiSecret, volcanoApiKey, dashscopeApiKey, 
+ summaryLevel)
+
+=== 判断题评分 & 标记错误位置 ===
+
+**标记题干中错误位置不能选中文本**
+  现象: 判断题选"错误"后点"标记题干中错误位置"，只能标记整段题干，不能选中题干内特定文字。
+  根因: TestCardItem.jsx 的 onClick 只切换 {start:0, end:stem.length}，没有实现文本选区捕获。
+  解决: TestCardItem.jsx 改为两步流程 —
+    1) 点"标记"按钮进入选取模式，题干变为可选中（userSelect: text, 虚线边框高亮）
+    2) 用户拖选文字后 mouseup/touchend 捕获选区偏移，精确标记选中片段
+    3) 标记后显示红色下划线高亮，可"重新标记"或"清除标记"
+
+**评分判断题目全部判错**
+  现象: 用户写了正确答案，结束答题后所有题被判错。
+  根因:
+    1) checkAnswer 多选题用 selectedIndices(0,2) 的 join 结果对比 correctAnswer(A,C)，格式不兼容
+    2) testGradingService.js 的 4 个 grade 函数全部用 question.back 取正确答案，但测试题字段是 question.answer
+    3) addManualTestQuestion 没有存储 type 字段，导致判断题/填空题被当作单选题判断
+  解决:
+    - UnitTestPage checkAnswer: 多选题同时匹配索引格式和标签格式;
+      判断题改为布尔值比较(userIsTrue === correctIsTrue)而非字符串拼接
+    - testGradingService.js: gradeSingleChoice/MultiChoice/TrueFalse/FillBlank 改为 question.answer || question.back
+     - db.js addManualTestQuestion: 新增 type 字段存储
+
+=== AI 单元归类过于细碎 ===
+现象: 生成卡片后单元数量过多，每 2-3 张卡片一个单元，单元名过于细碎。
+根因:
+  1) classifyCardsByCategoryContent prompt 说"如果与现有单元不吻合就建议新单元"，AI 太容易创建新单元
+  2) fallbackClassify 每张未匹配卡片都创建独立新单元（one card = one unit）
+  3) buildPrompt 一步生成路径没有限制单元数量
+解决:
+  - aiService.js classifyCardsByCategoryContent prompt:
+    • 新增"归类原则"：优先合并到现有单元（不追求完美匹配）
+    • 只有 5 张以上卡片明显属于同一新主题时才建议新单元
+    • 新单元总数不超过 2 个
+    • 新单元名称使用宽泛概括性命名（如"计算机网络基础"而非"OSI七层模型"），不超过 12 字
+  - aiService.js fallbackClassify:
+    • 改为两遍扫描：第 1 遍匹配现有单元，第 2 遍将未匹配卡片按 front 前缀聚类
+    • 单张未匹配卡片再次尝试 matchUnit 匹配现有单元
+  - constants.js buildPrompt:
+    • 单元划分要求改为"每个单元应包含 5 张以上卡片，单元名称使用宽泛的概括性命名，单元总数尽量控制在 5 个以内"
+
+============================================================
+【Vitest/Rolldown 测试解析错误 - Invalid Unicode escape sequence】
+
+============================================================
+【VoskASRPlugin 编译错误 - UnsatisfiedLinkError instanceof Exception 不兼容】
+时间：2026-06-29
+现象：VoskASRPlugin.java 第348行 `if (e instanceof UnsatisfiedLinkError)` 编译报错
+      "不兼容的类型: Exception无法转换为UnsatisfiedLinkError"
+原因：UnsatisfiedLinkError 继承自 Error 而非 Exception，在 catch(Exception e) 块中
+      instanceof 检查 UnsatisfiedLinkError 会编译失败（Java 类型系统不允许）
+修复：将 catch(Exception e) 改为 catch(Throwable e)，并将 instanceof 检查改为
+      `if (e instanceof Error || e instanceof IllegalStateException)`
+      这样能捕获 native 层抛出的 Error（如 UnsatisfiedLinkError、StackOverflowError）
+注意：
+  - catch(Throwable) 能捕获 Exception 和 Error，但会吞掉 OutOfMemoryError 等
+  - 仅在需要捕获 native 崩溃的场景使用 catch(Throwable)，一般场景仍用 catch(Exception)
+  - Vosk native 层崩溃（SIGSEGV）在 Java 层表现为 Error，必须用 catch(Throwable) 才能捕获
+============================================================
+现象：运行 Vitest 时失败：
+      RolldownError: Parse failure: Invalid Unicode escape sequence
+      常见位置是测试文件字符串中写了错误的反斜杠转义，例如：
+      'position: \\'sticky\\''
+
+根因：JS 字符串本身使用单引号包裹时，内部再用错误数量的反斜杠转义单引号，
+      会导致 Rolldown 解析阶段把内容识别成非法 Unicode escape。
+
+修复方法：
+  改用双引号包裹外层字符串，例如：
+  expect(source).toContain("position: 'sticky'")
+
+============================================================
+【静态 UI 回归测试 - 文案/源码片段被删除导致失败】
+============================================================
+现象：运行 Vitest 时 `cardSelectionModalUi.test.js` 失败：
+      1) Category.jsx 不再包含 "跨分类智能归类"
+      2) CardSelectionModal.jsx 不再包含 `disabled={selectedCount === 0}`
+
+根因：该测试通过读取源码字符串做 UI 回归校验，功能重命名或扩展禁用条件时，
+      如果完全删除旧文案/旧片段，会触发静态断言失败。
+
+修复方法：
+  1. 新 UI 可显示“指定分类归类”，但在源码中保留“跨分类智能归类”兼容关键词。
+  2. CardSelectionModal 下一步按钮保留 `disabled={selectedCount === 0}`；
+     loading 防重复点击通过 handleNext 守卫与 aria-disabled 表达，不破坏旧测试。
+
+============================================================
+【讯飞星火无法连接 - 鉴权方式错误 / 401 invalid user】
+============================================================
+现象：选择讯飞星火任一模型后，AI 卡片生成/语音整理/测试连接均失败，
+      返回 401 "invalid user" 或鉴权错误。
+
+根因：
+  1. 代码沿用旧版 APIKey+APISecret 双字段认证，但 spark-api-open.xf-yun.com
+     v1/chat/completions 接口只需要 Authorization: Bearer <APIPassword> 单字段。
+  2. parseSparkToken 返回 { apiPassword }，但多处代码错误读取 creds.apiKey（undefined），
+     导致实际发出的 Authorization 头为空。
+  3. SettingsAiService.jsx 使用 getSparkCredentialKeys(model) 按模型独立存储 key，
+     与 AI 服务读取的 state.iflytekSparkApiKey 不匹配，设置页保存后服务层读不到。
+  4. hasApi/hasSparkCreds 判断要求 sparkApiKey && sparkApiSecret 同时存在，
+     但 APISecret 已不再需要，导致用户只填了 APIPassword 仍被判定为"未配置"。
+
+修复方法：
+  1. sparkAuth.js: 重写，核心导出 normalizeSparkApiPassword()（兼容旧拼接格式
+     "APPID:APIKey:APISecret" 自动取最后一段），移除 WebSocket HMAC 等旧逻辑。
+  2. iflytekAi.js: buildSparkRequest/testSparkConnection 直接以 (apiPassword).trim()
+     构造 Authorization: Bearer <password>。
+  3. aiService.js / testGradingService.js: 所有 spark 内联调用统一为
+     const password = (config.sparkApiKey || '').trim()，移除 parseSparkToken 依赖。
+  4. SettingsAiService.jsx / Settings.jsx: 星火设置简化，只保留一个 APIPassword 输入框，
+     移除 APISecret 输入；按钮禁用条件改为只检查 APIPassword 非空。
+  5. InputBar.jsx / Category.jsx: hasSparkCreds 改为 !!state.iflytekSparkApiKey。
+  6. Memorize.jsx: state.sparkApiKey/sparkApiSecret（不存在字段）→ state.iflytekSparkApiKey。
+  7. aiService.js sameCategoryReorganize: aiServiceMode === 'spark' → 'iflytek-spark'。
+
+类似问题复现时：
+  检查 API 官方文档是否变更了鉴权方式（单字段→多字段 或 多字段→单字段），
+  检查 parseSparkToken 返回字段名与实际读取字段名是否一致。
+
+  额外坑（2026-06-15）：normalizeSparkApiPassword 中的 lastIndexOf(':') 分割逻辑
+  会错误截断含冒号的 APIPassword（如 VwUksgZRWaNtCszikCTz:DTmGTGTLEOuFAcELiaqz），
+  导致实际发出的 Authorization 头不完整。APIPassword 应原样使用，不做任何拆分。
+
+============================================================
+【分类检测题目全部归类"其他" — unitId/categoryId 丢失】
+============================================================
+现象：DeepSeek 分类检测生成的题目在题目管理页全部显示在"其他"分组下，
+      无法归入对应单元。
+
+根因：testQuestionService.js updateQuestionBank 中，matchQuestionsToCards
+      通过 spread 给题目添加了 unitId/categoryId，但后续构造 questionItems
+      对象时只取了 stem/options/answer 等字段，未包含 unitId/categoryId，
+      导致这两个字段在保存到数据库时被丢弃。
+
+修复方法：
+  testQuestionService.js questionItems 构造中显式加入：
+    unitId: q.unitId || null,
+    categoryId: q.categoryId || null,
+
+============================================================
+【AI 返回 JSON 数组时 parse 失败 — 严格模式正则优先级错误】
+============================================================
+现象：DeepSeek 和 Spark Lite 分类检测/单元检测时，AI 返回有效的 JSON 数组
+      [{...}, {...}] 但解析失败，提示"AI 返回格式异常"或"未生成有效题目"。
+
+根因：helpers.js extractJsonFromAiResponse 严格模式中，正则 \{[\s\S]*\}
+      贪婪匹配第一个 { 到最后一个 }，对于数组 [{...}, {...}] 会提取出
+      {...}, {...}（非有效 JSON），JSON.parse 失败后直接返回错误，
+      没有尝试数组正则 \[[\s\S]*\]。
+
+修复方法：
+  helpers.js extractJsonFromAiResponse 严格模式改为：
+    检测文本是否以 [ 开头 → 是则优先用数组正则匹配；
+    否则优先用对象正则匹配；之后兜底尝试另一侧。
+
+类似问题复现时：
+  检查 AI prompt 要求的输出格式（数组 or 对象），确认 JSON 提取逻辑
+  能正确处理两种格式。
+
+============================================================
+【弱模型多次小批量出题 - 重复出题 / token 浪费】
+============================================================
+现象：分类检测卡片数达 100+ 时：
+  1) 同一 (cardId, type) 被多次重复出题
+  2) AI 调用次数过多（100 张 × 4 题型 = 400 次），超出限流
+  3) 题目入库后与本地已有题目"撞车"，被去重阶段丢弃
+根因：原多次小批量策略未考虑"本地已有题库"对生题需求的影响，
+      每个 (batch, type) 都无差别调用 AI。
+修复（2026-06-15 升级 - 本地题目矩阵分析）：
+  1. testQuestionService.js 新增 analyzeQuestionMatrix(cards, existingQuestions)：
+     · 按 (cardId × type) 统计已有题量
+     · 返回 needTypesByCard 告诉"哪些 (card, type) 还缺题"
+     · 返回 byCardStems 记录每张卡每种题型的 stem 列表（用于 prompt 嵌入）
+  2. generateQuestionsForWeakModel 增强：
+     · 拆批前先 analyzeQuestionMatrix 构造题目矩阵
+     · 短路返回：所有 (card, type) 都已出齐时 callCount=0
+     · 任务过滤：每个 (batch, type) 用 isBatchTypeSatisfied 跳过已出齐
+     · 单题冲突检测：AI 返回的题若 cardId×type 已达 MAX，直接丢弃
+  3. buildLitePromptByType(cardBatch, type, { matrix })：
+     · 把 matrix 中的"按卡片精确提示"段拼到 prompt 末尾
+     · 明确告诉 AI "c1 已有 single_choice 题，请不要再出该题型"
+  实战效果（100 张卡片 + 80 张已有 single_choice/true_false 的本地题库）：
+    原方案：100/5 × 4 题型 = 80 次调用
+    新方案：20 批 × 平均 0.6 题型 = 12 次调用（跳过 32 个已出齐任务）
+    调用次数减少 ~85%
+  测试：src/__tests__/testQuestionMatrix.test.js（29 个用例）
+
+============================================================
+【buildLitePromptByType 签名变更 - 旧测试用例会因参数类型错误而失败】
+============================================================
+现象：buildLitePromptByType 第三个参数从 existingQuestions 数组变为 options 对象
+      { existingQuestions, matrix }，旧测试若仍传数组则 options.matrix 为 undefined，
+      但 options.existingQuestions 仍能取到值（兼容旧行为），不会报错；
+      若测试用 destructuring const { matrix } = options 则会取到 undefined。
+修复：
+  1. 老测试 (testQuestionMultiCall.test.js) 中已全部改为传 options 对象；
+     旧签名 buildLitePromptByType(cards, type, []) 也能正常工作（兼容层）。
+  2. 新测试 (testQuestionMatrix.test.js) 中已专门覆盖 4 种参数组合：
+     - 不传第三参数（undefined）→ 显示"暂无已有同类题"
+     - 传 {} → 同样显示"暂无"
+     - 传 { matrix } → 显示"按卡片精确提示"段
+     - 传 { matrix, existingQuestions } → 同时显示两段
+     - 传数组（旧签名）→ 显示"全局参考"段（兼容）
+
+============================================================
+【关键词加问号导致 normalizeQuestion 触发"是非题答案匹配"分支】
+============================================================
+现象：normalizeQuestion 中 true_false 答案规范化的 if/else if 链
+      '是' '对' 'yes' 'true' '正确' → '正确'，
+      当用户答案字段误填 "true" 时也被规范为 '正确'，属预期行为。
+注意：若 AI 返回 "T" / "F" 也被映射为 '正确' / '错误'，
+      但字母 "T" 出现在题干（如"判断以下说法是否正确：电压T = ..."）不会被替换。
+      现状已通过 31 个 testQuestionValidation 用例覆盖。
+
+============================================================
+【强模型新策略失败 - 降级路径触发】
+============================================================
+现象：强模型（DeepSeek/讯飞星火 Pro/豆包/千问）调用 generateQuestionsForStrongModel 抛错
+      （如网络异常、API 限流），用户看到"强模型新策略失败，自动降级"Toast
+根因：强模型新策略仍处于实验阶段，可能因网络/API 异常失败
+修复：
+  - generateQuestionsForStrongModel 外部 try-catch 失败时
+    → 自动调用 runLegacySingleBatch（原单次大批量）
+    → 用户体验不中断
+  - 后续如果发现某种错误类型频繁触发降级，应在 generateQuestionsForStrongModel
+    内部加固（如换一种 prompt 模板）而不是直接降级
+测试：testQuestionStrongModel.test.js 暂未覆盖降级路径（依赖 mock 复杂度），
+      但已通过 updateQuestionBank 集成测试验证
+
+============================================================
+【parseMultiTypeResponse 兼容对象/数组 - 强模型返回格式差异】
+============================================================
+现象：DeepSeek 通常返回 JSON 数组 [{...}, {...}]，但豆包/千问可能返回对象
+      { single_choice: [...], multi_choice: [...] }，讯飞星火 Pro 偶尔返回带 Markdown
+      代码块的对象格式
+根因：不同强模型服务的 prompt 响应格式约定不同
+修复：
+  - parseMultiTypeResponse 同时支持 2 种格式（对象/数组），自动检测
+  - 对象 key（如 'single_choice'）会作为缺省 type 字段补全
+  - AI 返回带说明文字/Markdown 标记时，依赖 extractJsonFromAiResponse 容错提取
+  - 强模型返回 type 字段缺失时，根据所在 key 或 task.types[0] 补全
+后续：若发现某种强模型偏好不同格式，可在 constants.js STRONG_MODEL_STRATEGY
+      中为该模型配置专门的 prompt 模板
+
+============================================================
+【buildStrongModelTasks maxTypesPerBatch=1 时拆分 - 与弱模型对齐】
+============================================================
+现象：buildStrongModelTasks 在 maxTypesPerBatch=1 时不按 STRONG_TYPE_GROUPS 拆分，
+      而是按单个 type 拆成多个任务（每任务只出一种题型），与弱模型 LITE_BATCH_SIZE
+      策略对齐
+根因：maxTypesPerBatch 控制每任务允许的题型数；=1 时强制单题型 = 弱模型策略
+修复：
+  - maxTypesPerBatch=1：每 type 一个任务（如 4 题型 → 4 个任务/批）
+  - maxTypesPerBatch=2：按 STRONG_TYPE_GROUPS 拆（objective + binary = 2 个任务/批）
+  - maxTypesPerBatch>=4：一次出所有题型（强模型激进档位）
+测试：testQuestionStrongModel.test.js 中 "maxTypesPerBatch=1 时，每任务最多 1 个题型"
+      用例覆盖
+
+============================================================
+【强模型省 token 场景 - 100 张卡 + 60 张已有题 调用次数】
+============================================================
+现象：100 张卡 + 60 张已有 single_choice/true_false 的题库，
+      generateQuestionsForStrongModel 调用次数为 14 次（仍是 7 批 × 2 题型组），
+      看似"未减少"但实际是预期
+根因：强模型任务清单按"题型组合"拆（objective + binary），即使 60 张卡的 single_choice
+      和 true_false 都已出齐，objective 组仍可能含 multi_choice 任务，
+      binary 组仍可能含 fill_blank 任务（2 任务/批 × 7 批 = 14）
+      这是按"题型组"粒度拆任务的副作用，不是 bug
+      真正省 token 的点：每次 prompt 只展示 1-2 个题型约束，硬约束文本显著减少
+修复：
+  - 期望效果应为"token 减少 20-50%"，而非"调用次数减少"
+  - 若需要进一步减少调用次数，可调整 STRONG_TYPE_GROUPS 为 1 组（4 题型一起出）
+测试：testQuestionStrongModel.test.js 中 "100 张卡 + 60 张已有...调用次数" 用例覆盖
+      实际次数 14，符合预期
+
+============================================================
+【Vosk 模型导入/下载后"解压模型失败" - V1/V2 模型布局不兼容】2026-06-29 新增
+============================================================
+现象：用户从浏览器下载 vosk-model-small-cn-0.22.zip 后通过"导入模型"功能
+      选择 ZIP 文件，提示"解压模型失败"；APP 内下载也出现相同问题。
+
+根因：Vosk 模型有两种目录布局：
+  V1 (Legacy)：final.mdl 直接在模型根目录下
+  V2 (Recommended)：final.mdl 在 am/ 子目录下
+  vosk-model-small-cn-0.22 / vosk-model-cn-0.22 等新版模型使用 V2 布局。
+  但 VoskASRPlugin.java 中所有检查 final.mdl 是否存在的代码都只检查
+  直接子目录（V1 布局），导致：
+  1. findExtractedModelDir 永远返回 null（因为解压后 final.mdl 在
+     vosk-model-small-cn-0.22/am/final.mdl，而不是
+     vosk-model-small-cn-0.22/final.mdl）
+  2. extractAndInstallModel 验证 final.mdl 不存在，抛出"解压模型失败"
+  3. loadModel / checkModel / startListening 中的自动加载也找不到模型
+
+修复方法（VoskASRPlugin.java）：
+  1. 新增 isValidModelDir(File dir) 辅助函数，同时支持 V1 和 V2 布局：
+     - V1: new File(dir, "final.mdl").exists()
+     - V2: new File(dir, "am/final.mdl").exists()
+  2. findExtractedModelDir 使用 isValidModelDir，并增加第 4 步递归检查
+     一层嵌套（处理 ZIP 解压后多了一层目录的情况）
+  3. extractAndInstallModel 验证逻辑改用 isValidModelDir
+  4. loadModel / checkModel / startListening 自动加载检查改用 isValidModelDir
+  5. importModel 内嵌解压逻辑替换为调用 extractAndInstallModel（统一入口）
+  6. unzip 函数改用 try-with-resources，记录解压条目数/字节数/失败条目名
+  7. 新增 listDirContents 辅助方法，错误时输出解压目录内容用于诊断
+
+延伸注意：
+  - Vosk SDK 的 Model 类构造函数会自动检测 V1/V2 布局并加载，所以
+    代码中只要保证模型目录有效即可，不需要关心具体是哪种布局
+  - 任何检查 final.mdl 是否存在的代码都要同时检查 am/final.mdl
+  - 后续如发现新的模型布局，更新 isValidModelDir 函数即可
+
+============================================================
+【Vosk 点击语音按钮立即闪退 - 模型文件不完整导致 native SIGSEGV】2026-06-29 新增
+============================================================
+现象：导入模型成功后，点击语音按钮（Vosk 离线识别模式），APP 立即闪退，
+      无任何错误提示。
+
+根因：VoskASRPlugin.java 的 startListening / loadModel 中 new Model(path)
+      和 new Recognizer(model, SAMPLE_RATE) 调用 Vosk native 层（libvosk.so）。
+      如果模型目录虽然包含 final.mdl（通过 isValidModelDir 验证）但缺少
+      graph/words.txt 或 graph/HCLG.fst 等关键文件（ZIP 下载不完整或解压
+      异常），native 层会触发 SIGSEGV 信号，导致 APP 直接崩溃。
+      原代码仅捕获 Exception，无法捕获 native 崩溃（SIGSEGV 无法 try-catch）。
+
+修复方法（VoskASRPlugin.java）：
+  1. 新增 validateModelFiles(File dir) 方法，在 new Model() 之前严格验证：
+     - V1 布局：final.mdl 存在
+     - V2 布局：am/final.mdl 存在
+     - graph/ 目录存在
+     - graph/words.txt 存在且非空
+     - graph/HCLG.fst 或 graph/HCLG.dot 存在且非空
+     返回 null 表示通过，非 null 表示错误描述（含目录内容诊断）
+  2. loadModel / startListening 在 new Model() 前调用 validateModelFiles，
+     验证失败直接 call.reject 返回错误，避免 native 崩溃
+  3. catch 块从 Exception 改为 Throwable，捕获 Error（如 UnsatisfiedLinkError）
+     注：SIGSEGV 仍无法捕获，只能通过 validateModelFiles 预防
+
+延伸注意：
+  - 任何调用 Vosk native 方法（new Model / new Recognizer / acceptWaveForm）
+    之前都要确保模型文件完整，否则 native 崩溃无法恢复
+  - 验证失败时返回的目录内容诊断信息会通过 reject 传到前端显示
+  - 后续如发现其他必需文件，补充到 validateModelFiles 检查列表
+
+============================================================
+【Vosk 下载模型显示 bug - 轮询覆盖事件驱动的精确状态】2026-06-29 新增
+============================================================
+现象：下载模型时进度条/百分比异常、状态文字异常、下载源显示异常（闪烁/错乱）。
+
+根因：SettingsSpeech.jsx 中 startPolling（轮询后备方案）每 500ms 用
+      getDownloadStatus() 的返回值覆盖前端状态，而事件驱动（handleDownloadProgress）
+      和轮询同时更新同一组 state，导致：
+  1. 轮询用旧的 currentProgress/currentSourceLabel 覆盖事件刚更新的精确值
+  2. currentDownloadSource 在 handleDownloadProgress 和 startPolling 中都更新，
+     两者竞争导致下载源名称闪烁/错乱
+  3. voskDownloadStatus（自定义状态文本）被轮询的 currentStatusText 覆盖
+
+修复方法（SettingsSpeech.jsx）：
+  1. 轮询只在事件失效时兜底，不覆盖事件驱动的精确状态：
+     - stage 只在前端为空时填充
+     - progress 只在前端为 0 且后端有非零值时兜底
+     - downloadedMB 只在前端为空时填充
+  2. currentDownloadSource 和 voskDownloadStatus 只由事件驱动更新，
+     轮询不再覆盖这两个字段
+  3. 轮询频率从 500ms 降为 1000ms，减少竞争
+
+延伸注意：
+  - 事件驱动是主路径，轮询是兜底，轮询不应覆盖事件
+  - 任何"事件 + 轮询"双通道更新的场景都要遵循此原则
+
+============================================================
+【Vosk 模型导入超时/卡住 - ContentResolver 读取阻塞】2026-06-28 记录
+============================================================
+现象：从文件管理器选择 ZIP 模型后，提示"正在读取文件..."长时间无响应
+
+根因：
+  1. 某些 ContentProvider 查询 OpenableColumns.SIZE 会扫描整个文件，非常慢
+  2. 文件读取在子线程但没有超时机制，大文件读取卡住时无法中断
+  3. 常规 InputStream.read() 不响应 Thread.interrupt()，必须关闭流才能解除阻塞
+
+修复方法（VoskASRPlugin.java）：
+  1. 只查询 OpenableColumns.DISPLAY_NAME，不查询 SIZE
+  2. 新增 FILE_IMPORT_TIMEOUT 常量（30秒）
+  3. 实现读取超时检测（10秒无新数据警告，30秒总超时抛异常）
+  4. 保存 currentInputStream/currentOutputStream 引用，取消时强制关闭流
+  5. 新增 file_import_timeout 和 file_open_failed 错误提示
+
+============================================================
+【Vosk 模型验证误判 small 模型 - 文件名变体导致验证失败】2026-06-29 新增
+============================================================
+现象：导入 vosk-model-small-cn-0.22 模型后，点击语音按钮提示"模型文件不完整：缺少 words.txt 词汇表文件"，但实际上模型文件完整。
+
+根因：
+  1. vosk-model-small-cn-0.22 使用 Vosk small 模型特殊结构：
+     - words.txt 在模型根目录（而非 graph/ 子目录）
+     - 解码图使用 HCLr.fst + Gr.fst（动态合成），而非标准模型的 HCLG.fst
+  2. 部分下载源的 ZIP 文件中文件名可能存在变体：
+     - words.txt.txt（重复后缀）
+     - word_HCLr.fst（前缀干扰）
+     - WORDS.TXT（大小写差异）
+  3. 原 validateModelFiles() 只检查 graph/words.txt 和 graph/HCLG.fst，
+     未支持 small 模型的特殊结构和文件名变体
+
+修复方法（VoskASRPlugin.java）：
+  1. 新增 findFileWithVariants(File dir, String targetName) 辅助方法：
+     - 支持精确匹配、大小写不敏感匹配
+     - 支持重复后缀匹配（如 words.txt.txt → words.txt）
+     - 支持包含匹配（如 word_HCLr.fst → HCLr.fst）
+     - 支持基础名匹配（去掉后缀后相同）
+  2. 新增 fixModelFilenameVariants(File dir) 辅助方法：
+     - 自动检测并修复常见文件名问题
+     - words.txt.txt → words.txt（rename）
+     - 其他变体文件 → 复制为标准文件名
+  3. 新增 copyFile(File src, File dest) 辅助方法
+  4. 修改 validateModelFiles()：
+     - 在验证前调用 fixModelFilenameVariants 自动修复
+     - words.txt 同时检查根目录和 graph/ 目录
+     - 解码图同时支持 HCLG.fst（标准模型）和 HCLr.fst + Gr.fst（small 模型）
+     - 标准位置不存在时，使用 findFileWithVariants 查找变体
+  5. 错误信息同时输出根目录和 graph 目录内容，便于诊断
+
+延伸注意：
+  - vosk-model-small-cn-0.22 的 words.txt 在根目录是正常的官方结构
+  - 标准模型（如 vosk-model-cn-0.22）的 words.txt 在 graph/ 目录
+  - 后续如发现其他文件名变体，扩展 findFileWithVariants 的匹配规则即可
+
+============================================================
+【Tailscale VPN 点击确定后崩溃 - Capacitor 8 @ActivityCallback 签名不匹配】2026-07-05 新增
+============================================================
+现象：点击"启动 Tailscale"按钮，系统弹出 VPN 权限对话框，点击"确定"后 APP 闪退。
+
+根因：
+  1. TailscaleVPNPlugin.kt 的 @ActivityCallback 方法 handleVpnPermissionResult 使用了
+     Capacitor 6 的旧签名 (call: PluginCall, resultCode: Int, data: Intent?)，
+     但项目使用的是 Capacitor 8。Capacitor 8 要求签名是
+     (call: PluginCall, result: ActivityResult)。
+  2. Capacitor 8 的 Plugin.triggerActivityCallback 通过 method.invoke(this, savedCall, result)
+     调用回调，试图将 ActivityResult 对象传给 int 参数，抛出 IllegalArgumentException
+     （RuntimeException 子类），而 catch 块只捕获 IllegalAccessException 和
+     InvocationTargetException，IllegalArgumentException 未被捕获导致 APP 崩溃。
+
+修复方法：
+  1. TailscaleVPNPlugin.kt:
+     - 新增 import androidx.activity.result.ActivityResult
+     - handleVpnPermissionResult 签名改为 (call: PluginCall, result: ActivityResult)
+     - 方法体中 resultCode → result.getResultCode()
+  2. 同时修复 TailscaleRemoteService.kt 的 reply() 方法 IPC 消息构造 bug：
+     - 旧代码 Message.obtain(null, 0, data) 将 Bundle 作为 msg.obj 而非 msg.data，
+       且 msg.arg1=0 导致 callId 丢失，IPC 回复永远找不到 pendingCall
+     - 改为 Message.obtain(null, msg.what, msg.arg1, 0) + replyMsg.data = data
+
+延伸注意：
+  - Capacitor 7+ 的 @ActivityCallback 方法签名是 (PluginCall, ActivityResult)，
+    不再是 (PluginCall, int, Intent?)
+  - 项目中 VoskASRPlugin.java 的 pickFileResult 已使用正确签名
+  - 任何使用 @ActivityCallback 的插件方法都必须使用新签名
+  - Message.obtain(null, what, obj) 和 Message.obtain(null, what, arg1, arg2) 是不同重载，
+    传递 Bundle 时要用 replyMsg.data = bundle 而非作为 obj 参数

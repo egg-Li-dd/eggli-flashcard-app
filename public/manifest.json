@@ -1,0 +1,22 @@
+{
+  "name": "egg李2.04",
+  "short_name": "egg李2.04",
+  "description": "AI驱动的中文背诵卡片App",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#4C3FB5",
+  "background_color": "#FAF8F5",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

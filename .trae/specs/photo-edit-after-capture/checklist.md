@@ -1,0 +1,12 @@
+- [x] Checkpoint 1: ImageEditor组件已创建，支持裁剪、旋转、缩放功能
+- [x] Checkpoint 2: 拍照后能够进入图片编辑界面
+- [x] Checkpoint 3: 从相册选择图片后能够进入图片编辑界面
+- [x] Checkpoint 4: 裁剪功能正常工作（支持拖拽调整裁剪框）
+- [x] Checkpoint 5: 旋转功能正常工作（点击旋转按钮图片顺时针旋转90度）
+- [x] Checkpoint 6: 缩放功能正常工作（双指缩放操作）
+- [x] Checkpoint 7: 编辑完成点击确认后能够进行OCR识别
+- [x] Checkpoint 8: 点击取消按钮能够关闭编辑界面
+- [x] Checkpoint 9: 图片编辑界面适配移动端屏幕，所有按钮可见可用
+- [x] Checkpoint 10: 界面风格简洁大方，符合移动端APP标准
+- [x] Checkpoint 11: 完整流程测试通过（拍照→编辑→确认→OCR）
+- [x] Checkpoint 12: 不影响其他功能（语音输入、文字输入等）

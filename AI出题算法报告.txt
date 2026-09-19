@@ -1,0 +1,1110 @@
+# ============================================================
+# AI 出题算法系统报告
+# 更新: 2026-06-23 (新增: 全部归类路径改为分组线性表，涵盖跨分类Part1-4+路径F/E/A/B/C，节省约60%输出token)
+# 更新: 2026-06-21 (新增: 跨分类 AI 全权归类纯 AI 语义审核验证 + 完整性约束强化)
+# 更新: 2026-06-20 (新增: 题库全量补全 updateQuestionBankComplete + 后台任务管理系统 + 悬浮窗进度面板)
+# 更新: 2026-06-20 (新增: 随机难度选项 + 题库完整性预检 + 章节测试难度选择 + 薄弱知识点字段兼容修复)
+# 更新: 2026-06-19 (新增: 分类上下文传递 + 7项算法缺陷修复 P0-P2)
+# 关联文件: src/services/testQuestionService.js (核心逻辑)
+#          src/services/aiService.js (API 调用层)
+#          src/services/aiCallLog.js (AI 调用日志)
+#          src/services/testGradingService.js (AI 评卷 + 薄弱知识点分析)
+#          src/utils/constants.js (Prompt 模板与常量, DIFFICULTY_LEVELS)
+#          src/pages/UnitTestMain.jsx (入口页，难度选择弹窗，随机难度预检，后台任务)
+#          src/context/BackgroundTaskContext.jsx (后台任务管理系统) ★新增 2026-06-20
+#          src/components/FloatingTaskPanel.jsx (悬浮窗进度面板) ★新增 2026-06-20
+#          src/pages/UnitTestPage.jsx (答题页，难度筛选，章节模式)
+#          src/pages/QuestionBankPage.jsx (题库管理，难度筛选)
+#          src/utils/testCrossCategoryClassification.js (跨分类全权归类测试) ★新增 2026-06-21
+#          src/pages/AdminPanel.jsx (管理面板，跨分类测试入口) ★更新 2026-06-21
+# ============================================================
+
+# 一、系统架构概览
+
+UnitTestMain.jsx (入口页)
+  更新题库 → updateQuestionBank()
+  单元/分类/章节检测 → 难度选择弹窗(简易/中等/困难/随机) →
+    ├─ 简易/中等/困难: updateQuestionBank(difficulty) → /test/unit?difficulty=X
+    └─ 随机: checkQuestionBankCompleteness() →
+           ├─ 题库完整: 直接跳转 /test/unit?difficulty=random
+           └─ 题库不全: 弹出确认对话框 →
+                  ├─ 补全题库: updateQuestionBank(undefined) 生成全部难度 → 跳转
+                  ├─ 使用现有: 直接跳转（部分知识点可能无题）
+                  └─ 取消
+  单元/分类/章节复习 → getReviewQuestions() → /test/unit (只查DB，不调AI)
+
+testQuestionService.js (核心出题逻辑)
+  模式检测 → isWeakModel() / isStrongModel()
+  弱模型路径 → generateQuestionsForWeakModel(targetDifficulty)
+  强模型路径 → generateQuestionsForStrongModel(targetDifficulty)
+  兼容路径   → runLegacySingleBatch()
+  题目矩阵   → analyzeQuestionMatrix(cards, existingQuestions, targetDifficulty)
+  题库预检   → checkQuestionBankCompleteness(testType, id) ★新增 2026-06-20
+  题目校验   → validateQuestion() + normalizeQuestion() (含难度归一化)
+  查重入库   → deduplicateQuestions() → matchQuestionsToCards()
+
+testGradingService.js (AI 评卷逻辑)
+  评卷主流程 → gradeTest() (本地评分 + AI 评卷 + 难度加权)
+  薄弱点分析 → computeWeakPoints() (兼容 knowledgePoint/knowledge_point/stem/front) ★修复 2026-06-20
+
+# 二、updateQuestionBank 主流程(12步)
+
+步骤1: 获取卡片数据
+  - 单元模式: getCardsByUnit(unitId)
+  - 分类模式: getAllCardsByCategory(categoryId)
+  - 卡片数为 0 则直接返回失败
+
+步骤2: 获取卡片状态
+  - getCardStatusesByCategory(categoryId) 获取每张卡片掌握状态
+  - 状态等级: new / review / learning / mastered
+
+步骤2.5: 获取分类上下文（分类名称 + 分类目的）★新增 2026-06-19
+  - 通过 getCategory(categoryId) 获取分类对象
+  - 提取 categoryName = category.name（分类名称）
+  - 提取 categoryPurpose = category.purpose（分类目的，如"考研"/"计算机408"等）
+  - categoryId 来源:
+    · 单元/章节模式: cards[0].categoryId
+    · 分类模式: 调用方传入的 id
+  - 获取失败时使用空字符串降级（不阻断出题流程）
+  - 分类上下文作为必要参数传递给三条出题路径（弱模型/强模型/兼容路径）
+  - 由 buildCategoryContext() 拼接为 prompt 段落:
+    【分类信息】
+    - 分类名称：{categoryName}
+    - 分类目的：{categoryPurpose}
+    请根据上述分类信息生成符合该学习场景的题目...
+
+步骤3: 获取已有题目
+  - 单元模式: getTestQuestionsByUnit(unitId)
+  - 分类模式: getTestQuestionsByCategory(categoryId)
+
+步骤4: 过滤过期题目
+  - cardId 不在当前卡片集合中(卡片已被删除)
+  - createdAt 超过 7 天且 cardId 为空(无主题目)
+  - 统计过期数量
+
+步骤5: 三路分流(核心决策)
+
+                    弱模型 isWeakModel(config) → 弱模型路径
+  config → 判断 → 强模型 isStrongModel(config) → 强模型路径
+                    其他                      → 兼容路径 (单次大批量)
+
+步骤6-8: AI 生成题目(见第三、四、五节)
+
+步骤9: 查重
+  - deduplicateQuestions() 基于 stem 的 Jaccard 相似度(阈值 0.85)与已有题目对比
+
+步骤10: 数量限制
+  - 单元模式: cards.length × 2
+  - 分类模式: MAX_QUESTIONS_CATEGORY = 100
+
+步骤11: 匹配卡片
+  - matchQuestionsToCards() 根据知识点/题干的相似度，将题目关联到原始卡片
+  - 补全 unitId / categoryId，优先使用 batch 内第一张 card 的 unitId 或调用方 id
+
+步骤12: 入库
+  - 构建完整题目对象，包含: id / userId / testType / targetId / type / cardId
+    / unitId / categoryId / stem / options / answer / analysis / difficulty(1-3)
+    / knowledgePoint / createdAt / updatedAt
+  - 调用 addTestQuestions() 批量写入 IndexedDB
+
+# 三、难度体系设计
+
+难度等级(归一化为1-3):
+  1 - 简易: 基础概念，记忆为主
+  2 - 中等: 理解应用，需要思考
+  3 - 困难: 综合分析，深度理解
+
+题目矩阵扩展:
+  原矩阵: (cardId, type) → count
+  新矩阵: (cardId, type, difficulty) → count
+
+每个知识点最大题目数: 4题型 × 3难度 = 12道题
+
+难度归一化规则(normalizeQuestion):
+  - 原始难度 → 数字转换 → 四舍五入 → 限制在[1,3]区间
+  - 无效值默认设为 2(中等)
+
+# 四、弱模型路径(Spark Lite)
+
+策略: 多次小批量，每批 ≤ 5张卡片 × 1种题型 × 指定难度
+原因: Spark Lite 上下文理解能力有限，大批量会导致质量严重下降
+
+流程:
+  1. 按状态优先级排序: new > review > learning > mastered
+  2. 构建标记映射表(新增改进7):
+     - 每张卡片分配全局唯一标记"标记1"/"标记2"/...
+     - cardMarkerMap: cardId → 标记(用于Prompt生成 [mk=标记N] 格式)
+     - markerDataMap: 标记 → {cardId, unitId, categoryId}(用于AI返回后直接查表)
+  3. 构建题目矩阵 (analyzeQuestionMatrix，含难度维度)
+  4. 短路检测: 所有(card, type, difficulty)均已满足 → 直接返回
+  5. 分批: 按 LITE_BATCH_SIZE=5 分成多批
+  6. 构建任务单:
+     - 前2批: 出4种题型(单选/多选/判断/填空)
+     - 后续批: 只出2种题型(单选/判断)，节约 token
+     - 兜底: 确保每张卡片至少分配1个任务(cardHasTask Map)
+  7. 顺序执行每个(batch, type)任务
+  8. Prompt 中卡片格式: `卡片N [mk=标记M]: 知识点"..." | 问题="..." | 答案="..."`
+     (包含难度约束: `请生成难度为${difficulty}的题目`)
+     (包含分类上下文: 分类名称+分类目的注入到 prompt 末尾"只返回 JSON 数组。"前)
+  9. AI 返回后解析(标记匹配优先):
+     - 优先: 标记匹配 → markerDataMap 直接查表 → 一步到位设置 cardId + unitId + categoryId
+     - 兜底: 序号card_N→UUID映射(应对AI未按标记格式返回的情况)
+     - 此步后，matchQuestionsToCards 的 cardId 匹配步骤被跳过(已有 unitId/categoryId)
+  10. 解析 → 标准化 → 校验 → 汇总
+  11. 查重去重
+
+关键参数:
+  | 参数                  | 值                 | 说明                       |
+  | LITE_BATCH_SIZE       | 5                   | 每批最多 5 张卡片           |
+  | maxFullBatches        | 2                   | 前2批出全部4种题型          |
+  | 后续批题型             | 单选+判断           | 只出2种，节约token          |
+  | MAX_QUESTIONS_PER_CARD_TYPE | 1             | 每卡每种题型最多1道         |
+  | 跳过上限              | 5                   | 某卡已有 ≥5 道同类型题则跳过 |
+
+错误控制:
+  - 单个(batch, type)任务失败不中断整体
+  - 支持 parallel=true 轮转并发模式(默认串行限流)
+  - 每个任务最多3次重试(间隔1s/2s/4s)
+  - 每个任务完成后回调 onBatchComplete 通知 UI
+
+弱模型特有规则:
+  - 每张卡片必须对应1道题(强制锁)
+  - 判断题必须是二选一，正确"、一对一"错了
+  - 填空题题干必须是陈述句(避免问句形式)，自动检测问句并转换陈述
+  - label 禁止用判断词/状态词(正确/错误/待验证等，正确填错)
+  - 包含反例/正例示例
+
+# 五、强模型路径(DeepSeek / Spark Pro / 火山 / 千问)
+
+策略: 题型组合分批，每批 ≤ 2-15张卡片 × 1-2种题型组合 × 指定难度
+原因: 强模型上下文能力强，让4种题型一次出prompt过长。拆分2组题型组合可大幅降低单次prompt token。
+
+流程:
+  1. 选择策略(按模型调参 batchSize + maxTypesPerBatch):
+     - DeepSeek/火山/千问: 15张/批，2种题型/批
+     - Spark Pro系列: 12张/批，2种题型/批
+  2. 按状态优先级排序
+  3. 构建标记映射表(改进7)，与弱模型相同的标记方案，cardId → 标记
+  4. 构建题目矩阵(含难度维度)
+  5. 短路检测: 所有已满足 → 返回
+  6. 构建任务单(buildStrongModelTasks，含targetDifficulty参数):
+     - 题型组合: objective组(单选+多选)+ binary组(判断+填空)
+     - 跳过"已出满"的(card, type, difficulty)
+     - 跳过整批
+  7. Prompt 中卡片格式: `卡片N [mk=标记M]: ...`(与弱模型统一，含难度约束)
+     (包含分类上下文: 分类名称+分类目的注入到 COMMON_RULES 与输入卡片之间)
+  8. AI 返回后解析: 标记优先 → 直接查表设置 unitId/categoryId；兜底card_N→UUID
+  9. 顺序执行每个任务
+  10. 解析(支持对象/数组格式) → 标准化 → 校验 → 格式校验
+  11. 查重去重
+
+关键参数:
+  | 模型                | batchSize | maxTypesPerBatch | 题型组合1              | 题型组合2              |
+  | DeepSeek/火山/千问   | 15        | 2                | single + multi       | true_false + fill    |
+  | Spark Pro系列        | 12        | 2                | single + multi       | true_false + fill    |
+
+STRONG_MODEL_STRATEGY 配置:
+  deepseek:              { batchSize: 15, maxTypesPerBatch: 2 }
+  iflytek-spark-generalv3:{ batchSize: 12, maxTypesPerBatch: 2 }
+  iflytek-spark-max-32k: { batchSize: 12, maxTypesPerBatch: 2 }
+  iflytek-spark-4.0Ultra:{ batchSize: 12, maxTypesPerBatch: 2 }
+  iflytek-spark-pro-128k:{ batchSize: 12, maxTypesPerBatch: 2 }
+  volcano:               { batchSize: 15, maxTypesPerBatch: 2 }
+  dashscope:             { batchSize: 15, maxTypesPerBatch: 2 }
+
+STRONG_TYPE_GROUPS 配置:
+  objective: { name: 'objective', types: ['single_choice', 'multi_choice'] }    
+  binary:    { name: 'binary',    types: ['true_false', 'fill_blank'] }
+
+题型规则(完整版):
+  | 题型     | 规则                                                          |
+  | 单选     | 4个选项 A-D，1个正确；题干含问题或设问句                     |
+  | 多选     | 4个选项 A-D，2-4个正确；题干包含"(多选题)"；答案如 "ABD"     |
+  | 判断     | 固定2个选项"正确"/"错误"；题干以"判断以下说法是否正确："开头 |
+  | 填空     | options=[]；题干用 ____ 标记占位；answer填被占位内容          |
+
+通用规则:
+  1. label 必须按各题型规则(选择题A-D，判断题"正确"/"错误")
+  2. text 必须是完整陈述句，停止知识点标题/状态词/判断词
+  3. 输出 JSON 数组 [{...}] 或对象 { "type": [...] }，每题含 type 字段
+
+错误控制:
+  - 强模型路径失败 → 自动降级到 runLegacySingleBatch(兼容路径)
+  - 单个批次失败有 Toast 通知
+  - 3次重试(1s/2s/4s)
+
+# 六、兼容路径(单次大批量)
+
+策略: 所有卡片 + 所有题型一次性提交
+用于: 未知AI服务、强模型路径降级、显示legacy模式
+
+流程:
+  1. 构建prompt(buildPrompt，含全部卡片和全部题型，含难度约束，含分类上下文)
+  2. 单次 AI 调用
+  3. 解析 JSON 数组
+  4. 标准化 + 校验
+  5. 返回通过校验的题目
+
+# 七、题目矩阵系统(analyzeQuestionMatrix)
+
+目的: 避免重复出题 + 减少 token 浪费
+
+分析维度:
+  byCardType:      cardId → { type: { difficulty: count } }  // 每卡每种题型各难度已有几道
+  byCardStems:     cardId → { type: { difficulty: [stems] } } // 用于prompt插入"已有题目"
+  needTypesByCard: cardId → [{ type, difficulty }, ...]       // 该卡还缺哪些题型难度组合
+  totalByType:     { type: count }                           // 本地题库按题型统计
+  totalCount:      number                                    // 本地题目总数
+
+使用方式:
+  - 弱模型: analyzeQuestionMatrix → 任务单跳过已出满的(batch, type, difficulty)
+  - 强模型: buildStrongModelTasks → 按题型组合跳过已出满
+
+关键函数:
+  isBatchTypeSatisfied(cardBatch, type, difficulty, matrix)
+    → 判断某批卡片在某题型某难度下是否全部已出满，已出满则跳过该任务
+
+  formatExistingQuestionsForBatch(cardBatch, matrix, questionType)
+    → 将已有题目信息格式化为 prompt 变量，插入到 prompt 尾部作为"避免重复"参考
+
+# 八、题目校验系统(validateQuestion)
+
+校验维度:
+  1. 基础字段校验: type/stem/answer 必填
+  2. 题型特定校验:
+     - 单选: 4个选项，答案匹配A-D
+     - 多选: 4个选项，答案为多个字母组合
+     - 判断: options=[{label:'正确'},{label:'错误'}]
+     - 填空: options=[]，题干含____
+  3. 难度校验: 归一化为1-3，无效值设为2
+  4. 格式校验: JSON结构、label格式、text完整性
+
+# 九、分层出题策略(章节→单元→批次)
+
+核心逻辑: 按卡片数量动态决定出题范围
+优先级: 章节整体 > 单元 > 分批
+
+策略规则:
+  1. 获取章节下所有卡片
+  2. 判断是否超过单次调用token上限
+     - 未超: 章节统一出题
+     - 超过: 按单元分别出题
+  3. 单元级别判断
+     - 未超: 单元统一出题
+     - 超过: 单元内分批(按模型batchSize动态计算)
+
+数据传递:
+  - 章节→单元: 通过 unitId 传递上下文
+  - 单元→批次: 通过 cardMarkerMap 保持标记映射
+  - 批次→入库: 通过 markerDataMap 一步到位设置 cardId/unitId/categoryId
+
+# 十、检测前难度选择流程
+
+用户流程:
+  1. 点击"单元检测"或"分类检测"
+  2. 弹出难度选择弹窗(简易/中等/困难)
+  3. 用户选择难度
+  4. 调用 updateQuestionBank(testType, id, aiConfig, showToast, userId, difficulty)
+  5. 跳转 /test/unit?mode=X&id=Y&difficulty=Z
+
+难度筛选:
+  - UnitTestPage: 根据 URL 参数 difficulty 筛选题目
+  - QuestionBankPage: 支持按难度筛选查看题库
+
+# 十一、数据流转图
+
+用户选择难度 → UnitTestMain → updateQuestionBank(difficulty)
+                                              ↓
+                                    步骤1: 获取卡片 (getCardsByUnit/getAllCardsByCategory)
+                                              ↓
+                                    步骤2: 获取掌握状态 (getCardStatusesByCategory)
+                                              ↓
+                                    步骤2.5: 获取分类上下文 (getCategory → name + purpose) ★新增
+                                              ↓
+                                    步骤3-4: 获取已有题目 + 过滤过期题目
+                                              ↓
+                                    步骤5: 三路分流(弱模型/强模型/兼容)
+                                              ↓
+                                    analyzeQuestionMatrix(含难度维度)
+                                              ↓
+                                    构建任务单(跳过已满足的(card,type,difficulty))
+                                              ↓
+                                    AI调用(Prompt含难度约束 + 分类上下文)
+                                              ↓
+                                    normalizeQuestion(难度归一化1-3)
+                                              ↓
+                                    matchQuestionsToCards(标记优先)
+                                              ↓
+                                    addTestQuestions(入库，含difficulty字段)
+                                              ↓
+                                    UnitTestPage(按difficulty筛选题目)
+
+# ============================================================
+# 2026-06-20 更新：随机难度 + 题库完整性预检 + 章节测试难度 + 薄弱知识点修复
+# ============================================================
+
+## 1. 随机难度选项 (DIFFICULTY_LEVELS)
+
+文件: src/utils/constants.js
+变更: DIFFICULTY_LEVELS 数组新增第 4 项
+  { value: 'random', label: '随机', description: '混合三种难度，题库不全时自动补全' }
+
+难度弹窗 UI (UnitTestMain.jsx):
+  - 简易(1): 绿色圆点 var(--color-success)
+  - 中等(2): 黄色圆点 var(--color-warning)
+  - 困难(3): 红色圆点 var(--color-danger)
+  - 随机('random'): 蓝色圆点 var(--color-primary)
+
+## 2. 题库完整性预检 checkQuestionBankCompleteness()
+
+文件: src/services/testQuestionService.js
+函数签名: async function checkQuestionBankCompleteness(testType, id)
+完整性标准: 每张卡片 × 4 题型 × 3 难度 = 12 道题目，至少各 1 道
+
+返回值:
+  {
+    complete: boolean,         // true=题库完整，false=有缺失
+    missingCount: number,      // 缺失的 (card, type, difficulty) 组合数
+    totalCombinations: number, // 应有组合总数 = cards.length × 12
+    existingCount: number,     // 已满足组合数
+    cardsCount: number,        // 卡片总数
+    missingByCard: Array<{     // 缺失题目的卡片列表
+      cardId: string,
+      cardFront: string,       // 卡片正面（截断60字符）
+      missing: Array<{type, difficulty}>
+    }>
+  }
+
+调用流程:
+  1. 根据 testType 调用 getCardsByUnit/getCardsByChapter/getAllCardsByCategory
+  2. 调用 getTestQuestions(testType, id) 获取已有题目
+  3. analyzeQuestionMatrix(cards, existingQuestions, undefined) 分析缺失
+     (targetDifficulty=undefined 表示检查全部 3 档难度)
+  4. 遍历 cards 统计每张卡的缺失组合
+
+## 3. 随机难度测试流程 (UnitTestMain.jsx)
+
+startTestWithDifficulty(difficulty) 分支:
+  if difficulty === 'random':
+    1. checkQuestionBankCompleteness(testType, id) 预检
+    2. 题库完整 → navigateToTestPage(testType, id, 'random')
+    3. 题库不全 → setShowRandomBankConfirm(true) 弹出确认对话框
+       - "补全题库并开始测试": updateQuestionBank(testType, id, ..., undefined)
+         difficulty=undefined 表示生成所有难度的缺失题目
+         强/弱模型根据 token 自动分批生成
+       - "使用现有题库进入": 直接跳转（部分知识点可能无题）
+       - "取消": 关闭弹窗
+
+  else (1/2/3):
+    原有流程: updateQuestionBank(testType, id, ..., difficulty) → 跳转
+
+## 4. 章节测试难度选择
+
+文件: src/pages/UnitTestMain.jsx
+变更: handleChapterTest 现在显示难度选择弹窗（与单元/分类检测一致）
+  const handleChapterTest = useCallback(async (chapterId) => {
+    setPendingTestConfig({ testType: TEST_TYPES.CHAPTER, id: chapterId })
+    setShowDifficultyModal(true)
+  }, [])
+
+文件: src/pages/UnitTestPage.jsx
+章节模式支持:
+  - loadQuestions: mode === 'chapter' → getTestQuestionsByChapter(chapterIdParam)
+  - 难度筛选: difficulty !== null && (mode === 'unit' || 'category' || 'chapter')
+  - typeId: mode === 'chapter' → chapterIdParam
+  - recordType: mode === 'chapter' → 'chapter_test'
+  - 会话检查: mode === 'chapter' → getTestQuestionsByChapter(chapterIdParam)
+  - difficulty=random 时 difficulty=null，不筛选难度（混合三种难度）
+
+## 5. 薄弱知识点字段兼容修复
+
+文件: src/services/testGradingService.js
+问题: computeWeakPoints 使用 q?.knowledge_point || q?.front，但 UnitTestPage 传入的题目
+      使用 knowledgePoint(驼峰) 和 stem(题干) 字段，导致显示"未知知识点"
+
+修复: computeWeakPoints 兼容 4 种字段命名
+  const kp = q?.knowledgePoint || q?.knowledge_point || q?.stem || q?.front || '未知知识点'
+
+同步修复: gradeTest 中的 safeQ 对象
+  knowledge_point: q.knowledge_point || q.knowledgePoint || null
+
+## 6. 数据层面验证
+
+测试文件: src/__tests__/randomDifficultyCompleteness.test.js (10 个测试)
+验证内容:
+  - analyzeQuestionMatrix 在 targetDifficulty=undefined 时检查全部 3 档难度
+  - analyzeQuestionMatrix 正确解析 difficulty 字段（数字 vs 字符串 vs 缺失默认2）
+  - checkQuestionBankCompleteness 题库为空/完整/部分完整时的返回值
+  - checkQuestionBankCompleteness 章节/分类模式调用正确的 db 函数
+  - checkQuestionBankCompleteness 无卡片时的边界情况
+
+测试结果: 10/10 通过，全部测试套件 239/240 通过
+  (1 个失败为 knowledgePointConfirmLayout.test.js，与本次修改无关)
+
+# 十二、分类上下文传递机制（2026-06-19 新增）
+
+目的: 让 AI 依据分类的学习目的生成更契合的题目，避免"考研"分类却出"期末考试"风格的题
+
+数据来源:
+  - categories 表的 name 字段 → 分类名称
+  - categories 表的 purpose 字段 → 分类目的（由 PurposeModal 编辑，支持预设标签+自定义输入）
+  - 通过 getCategory(categoryId) 一次性获取
+
+传递链路:
+  updateQuestionBank
+    → getCategory(categoryId) 获取 { name, purpose }
+    → tryGenerateWithWeakModel / generateQuestionsForStrongModel / runLegacySingleBatch
+        (透传 categoryName, categoryPurpose)
+    → buildLitePromptByType / buildStrongModelPrompt / buildPrompt
+        (接收 categoryName, categoryPurpose)
+    → buildCategoryContext(categoryName, categoryPurpose) 拼接为 prompt 段落
+    → 注入到 AI prompt
+
+prompt 注入位置（三条路径各自注入）:
+  - 兼容路径(buildPrompt): 注入到"检测类型/出题数"与"已有题库"之间
+  - 弱模型(buildLitePromptByType): 注入到"只返回 JSON 数组。"前（与已有题库段一起）
+  - 强模型(buildStrongModelPrompt): 注入到 COMMON_RULES 与【输入卡片】之间
+
+降级策略:
+  - getCategory 失败 → categoryName='' + categoryPurpose=''，不阻断出题
+  - 分类未设置 purpose → categoryPurpose=''，仅传分类名称
+  - 分类名称和目的都为空 → buildCategoryContext 返回空字符串，不注入任何内容
+
+向后兼容:
+  - 所有新增参数都有默认值（categoryName='', categoryPurpose=''）
+  - 现有测试和调用方无需修改即可正常工作
+
+# 十三、算法缺陷修复记录（2026-06-19 P0-P2）
+
+本次修复覆盖题目矩阵、难度传递、去重算法、Prompt 一致性、异常处理 5 个维度，共 7 项。
+
+## P0-1: 题目矩阵兼容别名缺失（C1 严重缺陷）
+
+问题:
+  - analyzeQuestionMatrix 返回值重构为 { byCardTypeDiff, byCardStems, needCombosByCard,
+    totalByTypeDiff, totalCount } 后，5 处调用方仍引用旧属性名 byCardType / needTypesByCard
+  - 弱模型路径 L907 短路检查直接 TypeError，强模型路径 L755 全部任务失败
+
+修复:
+  - 在返回值中添加惰性 getter 兼容别名:
+    get byCardType()      → 把 byCardTypeDiff 按 type 汇总（忽略难度）
+    get needTypesByCard() → 把 needCombosByCard 按 type 去重
+    get totalByType()     → 把 totalByTypeDiff 按 type 汇总
+  - 关键: typeFromKey(key) = key.replace(/_\d+$/, '') 正确还原含下划线的 type
+    （如 single_choice_2 → single_choice，不能用 split('_')[0]）
+
+## P0-2: 难度 null/undefined 判断不一致（C2 严重缺陷）
+
+问题:
+  - analyzeQuestionMatrix 用 !== undefined 判断 targetDifficulty
+  - buildStrongModelTasks 用 !== null 判断
+  - generateQuestionsForStrongModel 默认 difficulty = undefined
+  - 当 difficulty=undefined 时，矩阵生成 type_1/2/3 键，任务构建却检查 type_undefined
+    → 永远不匹配 → 所有题型"已满足" → 0 个任务生成
+
+修复:
+  - 统一所有难度判断为 != null（同时覆盖 null 和 undefined）
+  - generateQuestionsForStrongModel 默认改为 difficulty = undefined
+  - generateQuestionsForWeakModel 解构添加 difficulty = undefined
+  - 涉及行: L366, L475, L510, L555, L666, L928
+
+## P1-1: 中文去重算法失效
+
+问题:
+  - simpleTextSimilarity 基于标点分词，中文无标点句子变为单个 token → 相似度恒为 0
+  - 导致重复题目无法被去重
+
+修复:
+  - 4 处去重逻辑统一替换为 jaccardSimilarity（bigram 分词）
+  - jaccardSimilarity 对连续中文字符串按 2 字符滑窗生成 bigram
+  - 阈值 SIMILARITY_THRESHOLD = 0.85（高于此值视为重复）
+  - 涉及行: L864, L904, L1221, L2071, L2082
+
+## P1-2: Prompt 难度标尺不一致
+
+问题:
+  - constants.js 中 5 处 Prompt 模板写"难度 1-5 级"
+  - 但 DIFFICULTY_LEVELS 和 normalizeQuestion 实际用 1-3 标尺
+  - AI 可能生成 difficulty=4/5 的题，被归一化截断为 3
+
+修复:
+  - 统一所有 Prompt 模板为"难度 1-3（1=简单 2=中等 3=困难）"
+  - 涉及位置: constants.js L370, L511, L541, L572, L603
+
+## P1-3: 弱模型路径未传递难度参数
+
+问题:
+  - generateQuestionsForWeakModel 解构未包含 difficulty
+  - L957 analyzeQuestionMatrix(sortedCards, existingQuestions, difficulty) 中 difficulty 为 undefined
+  - 弱模型 prompt 也未包含难度约束 → AI 随机生成难度
+
+修复:
+  - L928 解构添加 difficulty = undefined
+  - buildLitePromptByType 接收 difficulty 参数
+  - 在 prompt 尾部注入难度约束:
+    【难度要求】{难度描述}
+    每道题必须包含 difficulty 字段，值为 {difficulty}
+  - tryGenerateWithWeakModel L2206 添加 difficulty 参数
+  - updateQuestionBank L2389 传递 difficulty 到弱模型
+
+## P2-1: 重试机制不区分错误类型
+
+问题:
+  - withRetry 对所有错误一律重试，包括认证错误（401/403）
+  - 认证错误重试无意义，浪费时间和 API 调用次数
+
+修复:
+  - 新增 classifyError(err) 分类: auth / rate_limit / timeout / network / parse / unknown
+  - auth 类型直接抛出不重试
+  - rate_limit 类型延迟翻倍
+  - 其他类型按 RETRY_DELAYS 正常重试
+
+## P2-2: 强模型 JSON 解析无宽松回退
+
+问题:
+  - parseMultiTypeResponse 仅用严格模式解析 JSON
+  - 强模型偶尔返回带 markdown 代码块或尾随逗号的 JSON → 解析失败 → 整批题目丢失
+
+修复:
+  - 严格模式失败后，回退到宽松模式（extractJsonFromAiResponse 第二参数 'iflytek-spark'）
+  - 宽松模式自动去除 markdown 代码块、修复尾随逗号
+  - 添加原始内容前 200 字符日志便于排查
+
+## 测试验证
+
+  - testQuestionMatrix.test.js: 29 tests passed（更新 5 个测试适配难度维度）
+  - testQuestionMultiCall.test.js: 30 tests passed
+  - testQuestionStrongModel.test.js: 36 tests passed（更新 4 个测试添加 difficulty 字段）
+  - chapterModelTestGen.test.js: 12 tests passed（更新 1 个测试区分相似 stem）  
+  - 总计: 107/107 AI 出题相关测试通过
+
+# ============================================================
+# 2026-06-20 更新（二）：题库全量补全 + 后台任务管理系统
+# ============================================================
+
+## 1. 题库全量补全 updateQuestionBankComplete()
+
+文件: src/services/testQuestionService.js
+函数签名:
+  async function updateQuestionBankComplete(
+    testType, id, config, showToast, userId,
+    onProgress, isCancelled, maxRounds = 10
+  )
+
+核心逻辑:
+  for (round = 1 to maxRounds):
+    1. 检查取消 (isCancelled)
+    2. checkQuestionBankCompleteness(testType, id) 预检
+    3. 若 complete=true → 返回成功
+    4. 更新进度 (onProgress)
+    5. updateQuestionBank(testType, id, ..., undefined) 生成所有难度缺失题目
+    6. 若本轮 added=0 → 终止（AI 无法生成更多）
+  最终检查并返回结果
+
+返回值:
+  {
+    success: boolean,
+    totalAdded: number,      // 累计新增题目数
+    rounds: number,          // 实际执行轮次
+    complete: boolean,       // 是否已补全
+    missingCount: number,    // 剩余缺失数
+    totalCombinations: number,
+    duration: number,        // 耗时（秒）
+    reason: 'complete' | 'max_rounds_reached' | 'cancelled' | 'no_cards'
+  }
+
+Token 优化:
+  - 每轮通过 analyzeQuestionMatrix 跳过已满足的 (card, type, difficulty) 组合
+  - 弱模型: 5 卡片 × 1 题型/批，前 2 批出全 4 题型，其余只出 single_choice + true_false
+  - 强模型: 按题型组合分批（12-15 卡片 × 1-2 题型/批）
+  - 无新增题目时自动终止，避免无效 AI 调用
+
+## 2. 后台任务管理系统
+
+### 2.1 BackgroundTaskContext (src/context/BackgroundTaskContext.jsx)
+
+任务状态机:
+  PENDING → RUNNING → COMPLETED / FAILED / CANCELLED
+
+核心 API:
+  startTask({ type, title, cancelable, taskFn }) → { taskId, promise }
+    - taskFn(updateProgress, isCancelled): 异步任务函数
+    - updateProgress(progress: 0-100, detail?: string)
+    - isCancelled(): 返回 boolean
+
+  cancelTask(taskId): 设置取消标志
+  removeTask(taskId): 移除已完成任务记录
+  clearFinishedTasks(): 清除所有已完成/失败/取消的任务
+
+任务类型 (TASK_TYPE):
+  QUESTION_BANK_UPDATE: 更新题库
+  QUESTION_BANK_COMPLETE: 补全题库
+  QUESTION_BANK_RANDOM: 随机难度补全
+  REVIEW_PREP: 准备复习
+  DATA_SYNC: 数据同步
+
+### 2.2 FloatingTaskPanel (src/components/FloatingTaskPanel.jsx)
+
+UI 组件:
+  - 悬浮按钮: 右下角，仅在有任务时显示，带任务数量徽章
+  - 任务面板: 底部弹出，显示任务列表和进度
+  - 任务项: 标题、状态标签、进度条、详情、耗时、取消/移除按钮
+
+样式特点:
+  - 使用项目主题变量 (--color-primary, --color-bg, --color-surface 等)
+  - 适配暗色模式和护眼模式
+  - 移动端优化: 44px 触控标准、safe-area-inset-bottom
+  - 动画: 悬浮按钮淡入、面板从底部滑入、进度条平滑过渡
+
+### 2.3 集成方式
+
+main.jsx:
+  <AppProvider>
+    <BackgroundTaskProvider>
+      <App />
+    </BackgroundTaskProvider>
+  </AppProvider>
+
+App.jsx:
+  <ToastView />
+  <FloatingTaskPanel />  // 全局悬浮窗
+
+UnitTestMain.jsx 迁移:
+  - handleCategoryUpdateBank: setLoading → startTask
+  - handleUnitUpdateBank: setLoading → startTask
+  - handleChapterUpdateBank: setLoading → startTask
+  - startTestWithDifficulty (非随机): setLoading → startTask + promise.then(跳转)
+  - confirmUpdateBankForRandom: setLoading → startTask(updateQuestionBankComplete) + promise.then(跳转)
+
+## 3. 云端上传策略
+
+确认: updateQuestionBank 和 updateQuestionBankComplete 仅写入本地 IndexedDB
+云端同步由用户手动触发（CloudData 页面），不在题库更新流程中自动上传
+
+## 4. 数据层面验证
+
+测试文件: src/__tests__/updateQuestionBankComplete.test.js (7 个测试)
+验证内容:
+  - 题库已完整时直接返回 complete=true，不调用 updateQuestionBank
+  - 无卡片时返回 success=false
+  - 取消机制正确工作
+  - 进度回调被正确调用
+  - maxRounds 限制生效
+  - 补全前后完整性检查结果一致
+  - 部分完整时 missingByCard 正确识别缺失卡片
+
+测试结果: 7/7 通过，全部测试套件 246/247 通过
+  (1 个失败为预先存在的 knowledgePointConfirmLayout.test.js)
+
+# ============================================================
+# 2026-06-21 更新：跨分类 AI 全权归类纯 AI 语义审核验证
+# ============================================================
+
+## 1. 改动背景
+
+原跨分类 AI 全权归类测试脚本 (testCrossCategoryClassification.js) 使用"本地关键字匹配"
+进行归类质量验证，存在以下问题：
+- 本地关键字匹配无法准确反映 AI 语义归类的真实质量
+- 关键字覆盖不全时容易误判
+- 与"纯 AI 语义归类"的设计理念不符
+
+本次改动将验证方式改为"纯 AI 语义审核"，并移除弱模型测试（弱模型 Spark Lite 不支持
+AI 全权归类功能）。
+
+## 2. 核心改动文件
+
+### 2.1 src/services/aiService.js
+- 新增导出函数 verifyCrossCategoryByAI (行 10615+)
+  - 功能：纯 AI 语义审核跨分类全权归类结果
+  - 输入：classificationResult, originalCards, config
+  - 输出：{ verifications: [{ cardIndex, cardId, categoryCorrect, chapterCorrect,
+           unitCorrect, confidence, reason }], duration, error }
+  - 采用"审核模式"：AI 直接判断每张卡片的归类是否正确（布尔值），而非独立重新归类
+  - 避免了独立归类导致的章节/单元名称不一致问题
+
+- 优化 assignCardsCrossCategory 函数 (行 9626+)
+  - 新增 isSparkLite 变量定义（修复原 no-undef 错误）
+  - 加强 prompt 完整性约束（最高优先级）：
+    · 每张卡片必须且只能被分配到一个单元
+    · 所有 cardIndices 合并后必须是 0 到 N-1 的完整集合
+    · 输出前必须逐一核对
+  - 新增全局去重逻辑（行 9754+）：
+    · 使用 assignedIndices Set 全局跟踪已分配卡片
+    · 跳过已被前面单元分配过的卡片索引
+    · 确保每张卡片只出现在一个单元中
+
+### 2.2 src/utils/testCrossCategoryClassification.js (完全重写)
+- 移除所有本地关键字代码：
+  · CATEGORY_KEYWORDS, CHAPTER_KEYWORDS, UNIT_KEYWORDS
+  · classifyCardLocal, localSimulationClassify
+  · calculateKeywordScore, isNameMatch (Jaccard 相似度)
+- 移除 'local' 和 'both' 测试模式
+- 新增 verifyByAiSemantic 函数调用 verifyCrossCategoryByAI
+- 更新 evaluateCrossCategoryResult 使用审核结果（布尔值判断）
+
+### 2.3 src/pages/AdminPanel.jsx
+- 移除 testMode 状态变量
+- 移除测试模式选择 UI（local/real/both 按钮）
+- 更新测试描述为"纯 AI 语义独立验证"
+- 更新结果展示：AI验证单元准确率、归类平均耗时、验证平均耗时
+- 更新日志过滤器：verifyCrossCategoryByAI, verifyByAiSemantic, 验证
+
+## 3. 算法设计：纯 AI 语义审核模式
+
+### 3.1 两步验证流程
+
+步骤1: AI 全权归类 (classifyCardsByCategoryContent)
+  - 输入：60 张打乱顺序的卡片
+  - 输出：分类→章节→单元三级结构 + 卡片分配
+  - 模式：cross-category-auto
+
+步骤2: 纯 AI 语义审核 (verifyCrossCategoryByAI)
+  - 输入：步骤1 的分类结果 + 原始卡片
+  - 输出：每张卡片的归类审核结果（布尔值）
+  - 不使用任何本地关键字匹配
+
+### 3.2 审核模式 vs 独立归类模式
+
+原方案（独立归类模式）：
+  - AI 独立对每张卡片重新归类
+  - 与步骤1 结果进行名称精确匹配
+  - 问题：AI 可能使用不同的章节/单元名称（同义改写），导致精确匹配失败
+  - 实测：章节准确率 0%、单元准确率 0%
+
+新方案（审核模式）：
+  - AI 直接判断每张卡片在步骤1 结果中的归类是否语义正确
+  - 返回 categoryCorrect/chapterCorrect/unitCorrect 布尔值
+  - 优势：不依赖名称精确匹配，纯语义判断
+  - 实测：章节准确率 100%、单元准确率 98.3%
+
+### 3.3 完整性约束强化
+
+在 assignCardsCrossCategory 的 prompt 中新增"完整性约束（最高优先级）"段落：
+1. 每张卡片必须且只能被分配到一个单元中，绝对不能遗漏
+2. 每张卡片绝对不能被重复分配到多个单元
+3. 所有 cardIndices 合并后必须是 0 到 N-1 的完整集合
+4. 输出前请逐一核对每张卡片是否已被分配且仅被分配一次
+5. 卡片总数为 N 张，所有单元的 cardIndices 总数必须等于 N
+
+代码层面全局去重：
+  - 使用 assignedIndices Set 全局跟踪
+  - 跳过已被前面单元分配过的卡片索引
+  - 配合原有的 assignCardsByAssociation 兜底分配未分配卡片
+
+## 4. 通过标准
+
+- 无缺失卡片 (missingCards === 0)
+- 无重复卡片 (duplicateCards === 0)
+- AI 审核单元准确率 ≥ 60%
+
+## 5. 测试验证
+
+测试数据：60 张卡片，3 个分类（计算机基础/操作系统/计算机网络），4 章节，14 单元
+测试模型：qwen-plus (Dashscope API)
+测试结果（两次运行）：
+
+第一次运行：
+  - 已分配卡片: 60/60 ✅
+  - 缺失/重复: 0/0 ✅
+  - 分类准确率: 100.0% ✅
+  - 章节准确率: 98.3% ✅
+  - 单元准确率: 96.7% ✅
+  - 结论: ✅ 通过
+
+第二次运行：
+  - 已分配卡片: 60/60 ✅
+  - 缺失/重复: 0/0 ✅
+  - 分类准确率: 100.0% ✅
+  - 章节准确率: 100.0% ✅
+  - 单元准确率: 98.3% ✅
+  - 结论: ✅ 通过
+
+## 6. 关联约束
+
+- AI 全权归类仅支持强模型（DeepSeek/Qwen/Spark Pro/Spark Max/火山）
+- Spark Lite 不支持 AI 全权归类（在 classifyCardsByCategoryContent 中拦截）
+- 测试脚本不测试弱模型的 AI 全权归类功能
+- 验证方式为纯 AI 语义审核，不使用任何本地关键字匹配
+
+## 7. 大数量卡片分批审核优化（2026-06-21 补充）
+
+### 7.1 问题背景
+
+当卡片数量超过 60 张时，verifyCrossCategoryByAI 的单次 AI 审核会导致响应被
+max_tokens 截断，JSON 无法完整解析。在 230 张卡片的测试中，单次审核响应长度
+达到 17839 字符，超出 8192 tokens 限制。
+
+### 7.2 解决方案：分批审核
+
+将 verifyCrossCategoryByAI 改造为分批审核模式：
+- 每批审核 60 张卡片（BATCH_SIZE = 60）
+- 每批独立调用 AI，独立解析 JSON
+- 所有批次结果合并为 allVerifications 数组
+- 单批解析失败时跳过该批，不影响其他批次
+- 所有批次均失败时才报错
+
+### 7.3 230 张卡片实测结果
+
+测试数据：180 跨学科知识点 + 50 中药学知识点 = 230 张
+测试模型：qwen-plus (Dashscope API)
+
+第一步 AI 全权归类：
+  - 分类数: 5（计算机系统基础、网络与信息安全、高等数学核心、中药学理论体系、软件与系统应用）
+  - 章节数: 15
+  - 单元数: 24
+  - 已分配卡片: 230/230 ✅
+  - 缺失/重复: 0/0 ✅（后处理补齐 23 张缺失，移除 25 个重复）
+
+第二步 AI 语义审核（分 4 批）：
+  - 审核卡片数: 230 ✅
+  - 分类准确率: 98.7% ✅
+  - 章节准确率: 98.7% ✅
+  - 单元准确率: 97.8% ✅
+
+结论: ✅ 通过
+
+### 7.4 完整性后处理强化
+
+在 assignCardsCrossCategory 中新增完整性后处理逻辑：
+1. 全局去重：使用 assignedIndices Set 跟踪已分配卡片，跳过重复索引
+2. 缺失补齐：找出未被分配的卡片，按知识点字符匹配度追加到最匹配的单元
+3. 这些后处理确保即使 AI 输出有遗漏或重复，最终结果也是完整的
+
+# ============================================================
+# 2026-06-23 更新：跨分类归类输出格式优化（分组线性表 Part1-4 全部改造）
+# ============================================================
+
+## 1. 改动背景
+
+跨分类 AI 全权归类（classifyCrossCategoryAuto）的4阶段流水线中，每个阶段的 AI 输出都采用
+JSON 嵌套结构。JSON 格式存在以下 token 浪费：
+- 重复的 key 名称（"unitName"/"overview"/"cardIndices" 在每个单元重复出现）
+- 大量 JSON 标点符号（{}、[]、""、:、,）
+- 缩进和换行
+
+在 230 张卡片实测中，单次审核响应达 17839 字符（超出 8192 tokens 限制），需要分 4 批处理。
+优化输出格式可显著降低 token 消耗，减少 AI 调用次数和成本。
+
+## 2. 方案对比
+
+| 方案 | 示例 | 60张卡片估算token | 节省比例 | 解析难度 | AI稳定性 |
+|------|------|------------------|---------|---------|---------|
+| JSON嵌套（原） | {"units":[{"unitName":"...","overview":"...","cardIndices":[0,1,2]}]} | 1500-2000 | 基准 | 低 | 高 |
+| 分组线性表（新） | 数制与编码|与计算机学科有关...|0,1,2 | 360-600 | ~65% | 低-中 | 高 |
+
+选择"分组线性表"方案，原因：
+1. token 最省（比 JSON 节省约 60-65%）
+2. 结构与 JSON 语义等价，解析逻辑改动小
+3. AI 输出稳定（线性列表比嵌套 JSON 更不易出错）
+4. 每行一个单元，结构清晰
+
+## 3. Part1 试点验证结果（70张卡片实测）
+
+Part1（batchCreateUnits）率先改造并验证通过：
+- 3批卡片（30+30+10张），全部线性表解析成功，零回退
+- AI 完全遵循新格式指令，未返回任何 JSON
+- 归类结果正确：使用指南8单元 + 计算机12单元 = 20单元
+- 输出 token 节省约 65%
+
+## 4. 全面推广（Part2/3/4 全部改造）
+
+Part1 验证通过后，将 Part2/3/4 全部改为分组线性表格式。
+
+### 4.1 Part1: batchCreateUnits（单元创建）
+
+文件: src/services/aiService.js
+
+解析函数: parseLinearUnitResult (L10196+)
+  格式: 单元名|概述|卡片索引
+  示例: 数制与编码|与计算机学科有关，与计算机基础知识章节有关|0,1,2
+
+Prompt 位置: L8055+
+解析逻辑: L8083+（线性表优先，JSON兜底）
+
+### 4.2 Part2: batchMergeUnits（单元合并）★新增
+
+解析函数: parseLinearMergeResult (L10263+)
+  格式: 合并后单元名|概述|源单元索引
+  示例: 计算机发展与分类|涵盖计算机发展历程、分类及未来发展趋势|13,14
+
+Prompt 位置: L8176+
+解析逻辑: L8206+（线性表优先，JSON兜底）
+
+### 4.3 Part3: assignUnitsToCategories（分类归属）★新增
+
+解析函数: parseLinearCategoryResult (L10326+)
+  格式: 分类名|是否新建(new/existing)|单元索引
+  示例: 使用指南|existing|2,3,4,5,6,7,8,9
+
+Prompt 位置: L8274+
+解析逻辑: L8302+（线性表优先，JSON兜底）
+
+### 4.4 Part4: batchCreateChapters（章节创建）★新增
+
+解析函数: parseLinearChapterResult (L10390+)
+  格式:
+    第一行（可选）: PURPOSE|分类目的
+    后续每行: 章节名|单元索引
+  示例:
+    PURPOSE|帮助用户快速掌握软件的核心功能与操作流程
+    基础入门|3
+    智能录入|1,2
+
+Prompt 位置: L8379+
+解析逻辑: L8411+（线性表优先，JSON兜底）
+
+## 5. 统一兜底机制
+
+所有4个阶段都采用相同的兜底策略：
+  let parsed = parseLinearXxxResult(result.content)  // 线性表优先
+  if (!parsed) {
+    console.log('[xxx] 线性表解析失败，回退到JSON解析')
+    parsed = parsePlanStructureResult(result.content)  // JSON兜底
+  }
+
+确保：即使 AI 未遵循新指令返回 JSON，也能正常解析。
+
+## 6. 向后兼容性
+
+- 解析逻辑保留 JSON 兜底，AI 返回 JSON 也能正常工作
+- 调用方（classifyCrossCategoryAuto）无需修改，返回值结构不变
+- 所有解析函数返回的对象结构与原 JSON 解析结果一致
+
+## 7. 预期收益
+
+| 阶段 | 优化前（JSON） | 优化后（线性表） | 节省 |
+|------|---------------|-----------------|------|
+| Part1 单次输出 token | ~1500-2000 | ~360-600 | ~65% |
+| Part2 单次输出 token | ~800-1200 | ~200-400 | ~65% |
+| Part3 单次输出 token | ~500-800 | ~150-300 | ~60% |
+| Part4 单次输出 token | ~600-1000 | ~200-400 | ~60% |
+| 整体流水线 token | 基准 | 节省约60% | 显著 |
+
+## 8. 验证方式
+
+观察控制台日志：
+- [parseLinearUnitResult] 线性表解析成功: N 个单元
+- [parseLinearMergeResult] 线性表解析成功: N 个合并组
+- [parseLinearCategoryResult] 线性表解析成功: N 个分类
+- [parseLinearChapterResult] 线性表解析成功: N 个章节
+- [xxx] 线性表解析失败，回退到JSON解析（仅异常时出现）
+
+## 9. 关联文件
+
+- src/services/aiService.js
+  - parseLinearUnitResult (L10196+) ★Part1解析
+  - parseLinearMergeResult (L10263+) ★新增Part2解析
+  - parseLinearCategoryResult (L10326+) ★新增Part3解析
+  - parseLinearChapterResult (L10390+) ★新增Part4解析
+  - batchCreateUnits Prompt+解析 (L8055+, L8083+) ★Part1
+  - batchMergeUnits Prompt+解析 (L8176+, L8206+) ★Part2
+  - assignUnitsToCategories Prompt+解析 (L8274+, L8302+) ★Part3
+  - batchCreateChapters Prompt+解析 (L8379+, L8411+) ★Part4
+- AI出题算法报告.txt ★更新
+
+# ============================================================
+# 2026-06-23 更新：卡片归类全路径分组线性表改造（路径F/E/A/B/C）
+# ============================================================
+
+## 1. 改动背景
+
+在跨分类 AI 全权归类（Part1-4）线性表改造验证成功后，将分组线性表格式推广到
+classifyCardsByCategoryContent 的所有其他归类路径，全面优化 token 消耗。
+
+## 2. 改造范围
+
+| 路径 | 函数 | 原格式 | 新格式 | 解析函数 |
+|------|------|--------|--------|---------|
+| F | classifyCardsByCategoryContent（默认） | JSON数组（3种深度） | 每卡一行线性表 | parseLinearCardAssignResult |
+| E | classifyCardsMultiRound（强模型大数据） | JSON数组（2套格式） | 每卡一行线性表 | parseLinearThreeNumResult + parseLinearNewAssignResult |
+| B | classifyCardsByKnowledgePoints（弱模型两轮） | JSON数组（2种模式） | 每卡一行线性表 | parseLinearKpResult |
+| A | classifyCardsByKnowledgePointsMultiRound（弱模型多轮） | JSON数组（2轮2种） | 每卡一行线性表 | parseLinearKpMultiRoundResult |
+| C | classifySameCategoryReorganize（同分类重整） | JSON对象（3种模式） | 分组线性表 | parseLinearSameCategoryResult |
+
+## 3. 各路径线性表格式
+
+### 路径F（默认路径）- 每卡一行
+chapter-and-unit: `cardIndex|E|chapterIndex|unitIndex` 或 `cardIndex|N|newChapterName|newUnitName`
+chapter-only: `cardIndex|E|chapterIndex` 或 `cardIndex|N|newChapterName|newUnitName`
+unit-only: `cardIndex|E|unitIndex` 或 `cardIndex|N|newUnitName`
+
+### 路径E（强模型大数据）- 每卡一行
+前N轮: `cardIndex|chapterIndex|unitIndex`
+最终轮: `cardIndex|N|newChapterName|newUnitName`
+
+### 路径B（弱模型两轮）- 每卡一行
+chapter-and-unit: `index|E|chapterIndex|unitName` 或 `index|N|newChapterName|unitName`
+unit-only: `index|E|unitName` 或 `index|N|unitName`
+
+### 路径A（弱模型多轮）- 每卡一行
+第一轮（章节级）: `cardIndex|E|chapterIndex` 或 `cardIndex|N|newChapterName`
+第二轮（单元级）: `cardIndex|E|unitIndex` 或 `cardIndex|N|newUnitName`
+
+### 路径C（同分类重整）- 分组线性表
+chapter-and-unit: `chapterIndex|chapterName|unitIndex|unitName|cardIndices`
+chapter-only: `chapterIndex|chapterName|unitName|cardIndices`
+unit-only: `unitIndex|unitName|cardIndices`
+
+## 4. 统一兜底机制
+
+所有路径都采用相同的兜底策略：
+  let parsed = parseLinearXxxResult(raw, depth)  // 线性表优先
+  if (!parsed) {
+    console.log('[xxx] 线性表解析失败，回退到JSON解析')
+    // 原有JSON解析逻辑
+  }
+
+## 5. 新增解析函数清单
+
+| 函数名 | 用途 | 位置 |
+|--------|------|------|
+| parseLinearCardAssignResult | 路径F（3种深度模式） | parseLinearChapterResult后 |
+| parseLinearThreeNumResult | 路径E前N轮（3字段数字） | callAIClassify后 |
+| parseLinearNewAssignResult | 路径E最终轮（4字段N格式） | parseLinearThreeNumResult后 |
+| parseLinearKpResult | 路径B（2种模式） | parseLinearNewAssignResult后 |
+| parseLinearKpMultiRoundResult | 路径A（2轮） | parseLinearKpResult后 |
+| parseLinearSameCategoryResult | 路径C（3种模式） | parseLinearKpMultiRoundResult后 |
+
+## 6. 预期收益
+
+| 路径 | 优化前（JSON） | 优化后（线性表） | 节省 |
+|------|---------------|-----------------|------|
+| 路径F | ~1500-2000 token | ~400-700 token | ~65% |
+| 路径E | ~1000-1500 token | ~300-500 token | ~65% |
+| 路径A/B | ~800-1200 token | ~250-400 token | ~65% |
+| 路径C | ~1000-1500 token | ~300-500 token | ~65% |
+| 整体 | 基准 | 节省约60% | 显著 |
+
+## 7. 向后兼容性
+
+- 所有路径保留 JSON 兜底，AI 返回 JSON 也能正常工作
+- 调用方无需修改，返回值结构与原 JSON 解析结果一致
+- 所有解析函数返回的对象结构与原 JSON 完全一致
+
+## 8. 验证方式
+
+观察控制台日志：
+- [parseLinearCardAssignResult] 线性表解析成功: N 张卡片
+- [parseLinearThreeNumResult] 线性表解析成功: N 条
+- [parseLinearNewAssignResult] 线性表解析成功: N 条
+- [parseLinearKpResult] 线性表解析成功: N 条
+- [parseLinearKpMultiRoundResult] 线性表解析成功: N 条
+- [parseLinearSameCategoryResult] 线性表解析成功: N 个单元
+- [xxx] 线性表解析失败，回退到JSON解析（仅异常时出现）
+
+## 9. 关联文件
+
+- src/services/aiService.js
+  - parseLinearCardAssignResult ★新增路径F解析
+  - parseLinearThreeNumResult ★新增路径E前N轮解析
+  - parseLinearNewAssignResult ★新增路径E最终轮解析
+  - parseLinearKpResult ★新增路径B解析
+  - parseLinearKpMultiRoundResult ★新增路径A解析
+  - parseLinearSameCategoryResult ★新增路径C解析
+  - callAIClassify ★修改（支持线性表优先解析）
+  - classifyCardsByCategoryContent Prompt+解析 ★路径F
+  - classifyCardsMultiRound Prompt+解析 ★路径E
+  - classifyCardsByKnowledgePoints Prompt+解析 ★路径B
+  - classifyCardsByKnowledgePointsMultiRound Prompt+解析 ★路径A
+  - classifySameCategoryReorganize Prompt+解析 ★路径C
+- AI出题算法报告.txt ★更新

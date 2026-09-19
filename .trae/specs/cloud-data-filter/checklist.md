@@ -1,0 +1,5 @@
+- [x] Checkpoint 1: "云端未更新"筛选条件正确显示本地有而云端没有的数据
+- [x] Checkpoint 2: 学习状态（card_status）的数据上传按钮已禁用
+- [x] Checkpoint 3: 一键上传功能排除了学习状态数据
+- [x] Checkpoint 4: 界面按钮符合移动端适配要求，可见可用
+- [x] Checkpoint 5: 文档分布.txt已更新相关记录

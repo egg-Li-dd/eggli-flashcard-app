@@ -1,0 +1,418 @@
+# ============================================================
+# APP 界面布局总览 (Interface Layout Map)
+# 更新: 2026-06-15（任务6 智能归类 UI/UX 优化 + 紧凑叠加/滚动修复）
+# 说明: 本文件记录所有页面的结构、组件、以及它们之间的导航关系
+# 重点: 长按文本选择禁用的分层防御机制
+# ============================================================
+
+
+# ─── 通用防御层 (长按文本选择禁止) ───
+
+## 第一层: 全局 CSS (src/index.css)
+  *: user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+  html/body/#root: user-select:none; touch-action:manipulation;
+  例外: input/textarea/[contenteditable="true"] 允许文本选择
+
+## 第二层: 全局 JS 事件 (src/App.jsx AppShell 内 useEffect)
+  document.addEventListener('contextmenu', handleContextMenu, { passive:false })
+  document.addEventListener('selectstart', handleContextMenu, { passive:false })
+  过滤条件: 若非 INPUT/TEXTAREA/contenteditable → preventDefault()
+
+## 第三层: 组件级 onContextMenu / onSelectStart
+  每个页面根 div 均挂载 preventTextMenu()
+  CardItem 组件 (src/components/CardItem.jsx) 额外加 WebkitUserSelect: 'none'
+
+# ============================================================
+# 顶部导航 (TabBar - App.jsx)
+# ============================================================
+
+TabBar: 顶部显示应用标题 + 4 个导航标签(已登录时)
+  记录(Home) / 背诵(Memorize) / 单元检测(UnitTestMain) / 账号(Account) / 设置(SettingsMain)
+  未登录时仅显示: 登录/注册
+
+
+# ============================================================
+# 页面列表与结构
+# ============================================================
+
+## 1. 首页 - 分类列表 (src/pages/Home.jsx)
+  路由: /
+  布局: 全屏容器 → 可滚动内容区 → 分类卡片网格
+  组件:
+    - 分类卡片 (card card-interactive): 显示分类名、卡片数量、进度环
+    - 新建分类: 右下角悬浮按钮 (fab)
+    - 重命名/删除: 长按分类卡片弹出操作菜单 (CategoryModal / 自定义菜单)
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+            ✅ 分类卡片 (card card-interactive)
+
+## 2. 分类详情页 (src/pages/Category.jsx)
+  路由: /category/:id
+  布局: 全屏容器 (flex column)
+    - 顶部 Header: 返回按钮 + 分类名 + 操作按钮
+    - 主内容: 单元概览下拉导航 + 卡片列表 (CardItem compact 模式)
+    - 底部: 输入栏 (InputBar) 或右侧悬浮输入栏 (FloatingInputBar)
+      · InputBar 主行: [▾工具栏] [textarea(含展开图标)] [🎤] [↑]
+      · textarea 自动扩展 min 1行 / max 3行
+      · 展开图标 ↗  底部滑入面板（编辑文本弹窗 → 确认/取消）
+    - 知识点确认弹窗 (KnowledgePointConfirm):
+      · 触发: AI 生成卡片前，先确认拆分出的原始知识点
+      · 层级: overlay zIndex=120，高于底部固定输入栏 zIndex=30
+      · 内容: 顶部标题 + 中部知识点列表单独滚动 + 底部粘性操作栏
+      · 底部按钮: sticky bottom + safe-area，保证“确认并生成卡片”在手机端与内置浏览器小视口中可见
+      · 数据: 用户确认/编辑后的每条知识点会按顺序强制写入生成卡片的 knowledge_point
+    - 卡片编辑弹窗 (CardItem):
+      · 入口: 卡片右下角“更多操作” → “编辑问题和答案”
+      · 原始知识点 textarea: 默认显示 card.knowledge_point
+      · 保存: 同步写回 knowledge_point / front / back
+    - 指定分类归类流程（任务 3）:
+      · 入口: 单元概览右侧菜单 → “指定分类归类”
+      · 第一步: CardSelectionModal 底部抽屉，按单元分组选择卡片，支持全选/反选/翻转查看原始知识点，底部“下一步”按钮
+      · 第二步: TargetCategorySelect 居中弹窗，显示所有分类及卡片数量，支持新建分类；底部固定"上一步 / 下一步"按钮，按钮最小高度 50px
+      ·   TargetCategorySelect 弹窗高度改为 min(calc(100dvh - 32px), 820px)，宽度 100%，圆角 20px；内容区 padding 18px；分类选项按钮 minHeight 60px；顶部标题区 padding 20px；三段式 flex column，header/footer flex-shrink: 0
+      · 第三步: UnitReorganizeConfirm 确认 AI 生成的目标分类单元方案，可编辑单元名，确认后执行移动
+      · 完成: 自动导航到目标分类详情页，并通过 Toast 显示移动成功、原空分类删除等结果
+    - AI 全权归类流程（任务 4）:
+      · 入口: 单元概览右侧菜单 → “AI 全权归类”
+      · 第一步: CardSelectionModal 选择跨分类重新规划的卡片，底部“下一步”触发 AI 生成全量分类方案
+      · 第二步: CrossCategoryConfirm 居中弹窗，展示“分类 → 单元 → 卡片”三级折叠结构
+      · 编辑: 分类名输入框 minHeight 48px（分类）/ 46px（单元），字号 15-16px，padding 10px；卡片 minHeight 64px
+      · 卡片点击后在题目 / 原始知识点之间翻转（翻转后字号加粗区分度更强）
+      · 分类折叠按钮 44x44，单元折叠按钮 42x42
+      · 底部: 取消 / 确认执行按钮 sticky bottom + safe-area，按钮最小高度 50px
+      · 完成: 创建新分类和新单元，移动卡片，清理原空单元/空分类，导航回首页分类列表
+    - 三个智能归类入口移动端滚动修复（2026-06-15）:
+      · 入口: "智能单元整理" / "指定分类归类" / "AI 全权归类"
+      · CardSelectionModal: 抽屉高度使用 86dvh，内容区 data-mobile-scroll="card-selection-content"，明确 touch-action: pan-y + overscroll-behavior: contain
+      · TargetCategorySelect: 弹窗高度改为 min(calc(100dvh - 32px), 820px)，宽度 100%，圆角 20px；三段式 flex column（header/footer flex-shrink: 0），内容区 overflowY: auto + padding 18px；分类选项按钮 minHeight 60px；底部操作栏按钮 minHeight 50px
+      · UnitReorganizeConfirm: 弹窗高度 min(calc(100dvh - 32px), 820px)，顶部标题区 padding 20px（图标 48px + 标题 19px + 副标题 14px）；内容区 padding 18px；单元名输入框 minHeight 48px，字号 16px，加粗 700；卡片按钮 minHeight 64px；底部操作栏 flex-shrink: 0 + 按钮 minHeight 50px；三段互不叠加
+      · CrossCategoryConfirm: 弹窗高度 min(calc(100dvh - 32px), 820px)，顶部标题区 padding 20/20/16（图标 48px，标题 19px）；分类名输入框 minHeight 48px，单元名输入框 minHeight 46px；分类折叠按钮 44x44，单元折叠按钮 42x42；卡片按钮 minHeight 64px；内容区 overflowY: auto + padding 18px；底部操作栏按钮 minHeight 50px；三段互不叠加
+      · 核心防叠加策略: 所有弹窗容器 overflow: hidden + 三段式 flex column；header/footer 显式 flex-shrink: 0；内容区 flex: 1 + overflowY: auto，保证滚动独立、操作区永远可见
+      · 关键根因（2026-06-15 补充）: 三个组件都用 className="dialog"，而 CSS .dialog 有默认 max-height: 80vh + margin: 16px + overflow-y: auto，在移动端会把弹窗压缩成 80vh 并让整个弹窗滚动，造成内部内容区域高度计算偏小、滚动范围错乱，并与底部固定输入栏叠加到底部操作按钮被遮挡；解决：在每个组件弹窗容器上加 maxHeight: 'none' + margin: 0 + overflowY: 'hidden' 覆盖 CSS 类默认值
+    - 智能归类任务6反馈流:
+      · 选择卡片后进入 AI 阶段，Toast 显示“AI 正在分析知识点...”
+      · 确认整理方案后进入数据库事务阶段，Toast 显示“正在整理卡片...”
+      · 本地事务完成后进入云端同步阶段，Toast 显示“正在同步数据到云端...”
+      · 成功提示包含整理卡片数、创建/重命名单元数、删除空单元/空分类数、同步结果
+      · 错误提示区分网络中断、AI 超时、API Key 配置异常、AI 空结果，并给出重试/检查建议
+      · 空分类点击智能整理入口提示“该分类下没有卡片可整理”
+      · AI 调用前基于 cards.knowledge_point 去重，减少重复卡片导致的无效整理
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+            ✅ CardItem 组件内置 preventTextMenu
+
+## 3. 背诵学习页 (src/pages/Memorize.jsx)
+  路由: /memorize
+  布局: 全屏容器，现代简约风格（渐变、投影、圆角胶囊形状）
+  视觉体系: 分类按钮 `memorize-cat-btn`（圆角胶囊+渐变选中态）、横幅 `memorize-alert`（毛玻璃+渐变）、
+           下拉框 `memorize-filter-trigger`（自定义下拉，圆角胶囊+投影+动画）、卡片容器 `memorize-card-wrapper`（柔和投影）、
+           进度条 `memorize-progress`（渐变填充）、统计区 `memorize-stats`（卡片样式）、
+           操作按钮 `memorize-action-btn`（50px高度+投影）
+    - 顶部分类选择栏: 水平滚动分类按钮（可切换分类），圆角胶囊形状，选中态渐变背景+投影
+    - 分类选中后：章节 + 单元双下拉选择器（并排，各占 50% 宽度）
+      · 圆角胶囊形状，聚焦时蓝色光晕，选中态边框高亮
+      · 章节下拉：切换章节时自动加载该章节下的单元列表
+      · 单元下拉：根据所选章节动态显示对应单元
+      · 每个选项显示名称 + 卡片数量
+      · 默认选中"全部章节"/"全部单元"
+    - 顶部提示横幅：复习提醒（蓝色毛玻璃渐变）/ 到期提示（暖色毛玻璃渐变）
+      · 带对应图标，操作按钮跟随父级配色
+    - 模式选择: 顺序背诵 / 活跃记忆 / 艾宾浩斯 / 薄弱专攻
+    - 卡片主区: CardItem large 模式 (3D 翻转效果)，外层 memorize-card-wrapper 柔和投影
+    - 进度条: 6px 高度，圆角端点，渐变填充色
+    - 底部操作栏: 已掌握 / 学习中 / 待掌握 / 移动 (4 按钮)，50px 高度，投影
+    - 统计区: 已掌握/待掌握/新卡片 计数，卡片样式背景
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+            ✅ CardItem large 卡片正文区禁止文本选择
+
+## 4. 单元检测入口页 (src/pages/UnitTestMain.jsx) [2026-06-17 重构 + 2026-06-17 章节视图扩展]
+  路由: /test (TabBar "单元检测")
+  布局: 全屏容器 (flex column)
+    - 顶部标题: "单元检测" + 分类数量副标题
+    - 快捷入口按钮行: [答题记录] [我的错题本] [题库管理]（3 个等宽按钮）
+    - 检测概览面板（可折叠）:
+      · 标题栏: "▼/▲ 检测概览 · 共 N 个分类" + 全部展开/收起按钮
+      · 面板内容区 (max-height: 60vh, 独立滚动):
+        - 视图切换 Tab: [单元视图] | [章节视图]（胶囊式切换，选中态 --color-primary 背景）
+        - 单元视图: 分类→单元两级结构，点击分类展开/折叠，点击单元定位跳转
+        - 章节视图: 分类→章节→单元三级结构，章节行可展开，展开后显示 [章节检测][章节复习][更新题库] 操作按钮 + 该章节下单元列表
+        - 章节操作按钮配色: 章节检测 primary-light / 章节复习 success-light / 更新题库 accent-light
+        - 无章节分类显示"该分类下暂无章节"提示
+        - 切换视图时重置章节相关状态
+        - 未归章单元（chapterId === null）单独显示在黄色背景的"未归章单元"区域
+    - 下方分类卡片区: 根据 overviewMode 条件渲染
+      · 单元视图: 每个分类一张卡片，内含分类名 + 卡片数 + 操作按钮（分类检测/分类复习/更新题库）+ UnitGroup 折叠面板
+      · 章节视图: 每个分类一张卡片，内含分类名 + 卡片数 + 章节卡片列表
+        - 章节卡片: 可折叠，展开后显示 [章节检测][章节复习][更新题库] 操作按钮 + 该章节下单元列表
+        - 未归章单元: 黄色边框区域，显示 [分类检测][分类复习][更新题库] 操作按钮 + 未归章单元列表
+        - 章节卡片配色: 展开态绿色背景（success-light）
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+## 5. 账号页 (src/pages/Account.jsx)
+  路由: /account
+  登录态:
+    - 未登录: 登录表单 + 注册表单 + 本地模式登录入口
+    - 已登录: 用户资料卡片 + 学习统计面板 + 连续学习天数条（可点击跳转背诵计划）+ 背诵计划入口按钮 + 云端数据处理入口 + 数据管理 + 退出登录
+  学习统计面板 2×3 网格（均可点击跳转）:
+    - 总卡片数📚 → 首页 /
+    - 今日已学📅 → StatsDetail?type=today
+    - 已掌握✅ → StatsDetail?type=mastered
+    - 到期复习⏰ → /memorize/plan（背诵计划）
+    - 长期记忆🧠 → /stats/longterm
+    - 章节数📖 → 首页 /
+  连续学习天数条:
+    - N > 0: 显示"🔥 已连续学习 N 天 →"，点击跳转 /memorize/plan
+    - N = 0: 显示"今日还未学习，去看看背诵计划 →"，点击跳转 /memorize/plan
+  背诵计划入口按钮: 📋 背诵计划 → 点击跳转 /memorize/plan
+  云端数据处理: 紧凑按钮样式，点击跳转 /cloud-data
+  数据管理: 导出/导入/清除本地数据
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+## 6. 统计详情页 (src/pages/StatsDetail.jsx)
+  路由: /stats/:type
+  布局: 顶部导航 (返回) + 标签切换 (今日/已掌握/学习中/待开始) + 卡片列表
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+## 7. 设置主页 (src/pages/SettingsMain.jsx)
+  路由: /settings
+  布局: 4 个分类入口卡片
+    - AI 服务设置 → /settings/ai-service
+    - 语音识别设置 → /settings/speech
+    - 显示与偏好 → /settings/display
+    - 云端同步 → /settings/cloud
+  长按防御: (内容简洁, 依赖全局 CSS 层)
+
+## 8. AI 服务设置页 (src/pages/SettingsAiService.jsx)
+  路由: /settings/ai-service
+  布局: 顶部 Header(返回+标题) + 滚动内容
+    - AI 服务商切换 (DeepSeek / 讯飞星火 / 火山引擎豆包 / 阿里云百炼)
+    - API Key 配置与测试
+    - 模型选择下拉
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+## 9. 语音识别设置页 (src/pages/SettingsSpeech.jsx)
+  路由: /settings/speech
+  布局: 顶部 Header + 滚动内容
+    - 识别模式切换 (浏览器语音/Whisper API/讯飞 IAT/阿里 Dashscope)
+    - API 配置与测试
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+## 10. 显示与偏好设置页 (src/pages/SettingsDisplay.jsx)
+  路由: /settings/display
+  布局: 顶部 Header + 滚动内容
+    - 字体大小: 小/标准/大
+    - 护眼模式: 开关
+    - 输入栏模式: 底部固定 / 右侧悬浮
+    - OCR 缓存: 清理缓存按钮 (调用 clearOcrCache, 用 showToast 显示结果)
+    - OCR 后自动生成卡片: 开关 (存储键 ocr_auto_generate, 默认开启)
+      · 开启: OCR 完成后自动调用 handleGenerate 生成卡片
+      · 关闭: OCR 结果写入输入框 (setInputValue), 不自动生成
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+## 11. 云端数据管理页 (src/pages/CloudData.jsx)
+  路由: /cloud-data
+  布局: 顶部导航(返回+标题) + 表名列表
+  功能: 一键上传/下载所有数据到 Supabase
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+## 12. 云端同步设置页 (src/pages/SettingsCloud.jsx)
+  路由: /settings/cloud
+  布局: 顶部 Header(返回+标题) + 滚动内容
+    - 未登录提示（请先登录云端账号）
+    - 设置同步: 上传所有设置 / 从云端同步（22+ 字段）
+    - 用户资料同步: 显示头像+昵称 / 上传资料 / 下载资料
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+## 13. 答题记录页 (src/pages/AnswerRecordPage.jsx) [2026-06-15 改写]
+  路由: /test/answer-records
+  布局: 顶部全屏容器 (flex column, overflow: hidden) → 可滚动内容区
+    - 顶部标题 + 副标题统计：未完成 N 条 · 已完成 N 条
+    - "未完成测试"分组（仅当有未完成会话时显示）:
+        · 标题栏: 4px 橙色竖条 + "未完成测试" + 数量徽章（橙色 #fff7e6/#b45309）
+        · 每条卡片: 橙色边框 1.5px (#fcd9a1) + 浅色时间图标盒 + 标题/未完成徽章 + 已答 X/Y + 最后保存时间 + 4px 进度条（橙色 #f59e0b）+ 右侧下拉箭头
+        · 展开后: 用时/当前题号 + 题目预览前 5 题（已答打勾绿色）+ 三按钮网格（重新开始 btn-secondary / 删除 btn-ghost 红字 / 继续答题 btn-primary），按钮均 minHeight 44px
+        · 未展开状态也显示同样的三按钮网格，避免必须先展开
+    - "已完成记录"分组:
+        · 标题栏: 4px 主色竖条 + "已完成记录" + 数量徽章
+        · 每条卡片: 主题色图标盒 + 题型名 + 时间 + 右侧大字号正确率 + X/Y 正确 + 下拉箭头
+        · 展开后: 用时/得分 + 每题对错（绿/红底）+ 删除此记录按钮
+    - 居中确认弹窗 (position:fixed inset:0 + flex center + 16px 边距 + maxWidth 360px):
+        · 三种文案分支: 继续答题/重新开始/删除
+        · 危险操作（删除）按钮使用 btn-danger 红色主题
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+## 14. 云端数据详情页 (src/pages/CloudDataDetail.jsx)
+  路由: /cloud-data/:table
+  布局: 顶部导航 + 数据表行/列编辑界面
+  长按防御: ✅ 外层 div onContextMenu + onSelectStart
+
+
+# ============================================================
+# 组件层
+# ============================================================
+
+## CardItem (src/components/CardItem.jsx)
+  两种模式:
+    - compact: 分类详情页列表项, 卡片正面+查看答案按钮
+    - large: 背诵页大卡片, 3D 翻转效果, 正反面切换, 收藏按钮
+  编辑弹窗:
+    - 原始知识点 textarea 使用 card.knowledge_point 预填
+    - “根据知识点重新生成问题和答案”基于 textarea 当前内容调用 AI
+    - 保存时写回 knowledge_point / front / back，供后续出题、背诵和再次编辑复用
+  长按防御: 根 div onContextMenu + onSelectStart
+            style 追加 WebkitUserSelect: 'none'
+
+## UnitGroup (src/components/UnitGroup.jsx)
+  单元分组折叠面板, 内含多张 CardItem (compact)
+
+## CardSelectionModal (src/components/CardSelectionModal.jsx)
+  通用卡片选择弹窗
+  - 支持按单元分组展示卡片、单元全选、反选、单卡选择
+  - 点击卡片翻转显示原始知识点 knowledge_point
+  - 任务6移动端/性能优化：总卡片数超过 50 张时按单元分批渲染 visibleCards，避免 100+ 卡片一次性渲染卡顿
+  - 底部操作栏使用 sticky bottom + safe-area，确认按钮在小屏和刘海屏底部仍可见，按钮高度不低于 44px
+  - 2026-06-15: 抽屉使用 86dvh 固定高度，内容区增加 pan-y 独立滚动，解决手机 App 端三个智能归类入口弹窗无法滚动的问题
+
+## UnitReorganizeConfirm (src/components/UnitReorganizeConfirm.jsx)
+  AI 单元整理确认弹窗
+  - 展示 AI 生成的单元方案，可编辑单元名称
+  - 支持现有单元 / 新建单元标识
+  - 移动端：maxHeight 使用 100dvh，内容区 overflowY:auto 独立滚动，底部确认区保留 safe-area
+  - 2026-06-15: 中部内容区增加 data-mobile-scroll 和 touch-action: pan-y，确保 App WebView 中可上下滚动
+
+## TargetCategorySelect (src/components/TargetCategorySelect.jsx)
+  指定分类归类的目标分类选择弹窗
+  - 显示现有分类和卡片数，支持新建目标分类
+  - 2026-06-15: 高度使用 calc(100dvh - 32px)，分类列表内容区独立滚动，底部“上一步 / 下一步”保留 safe-area
+
+## CrossCategoryConfirm (src/components/CrossCategoryConfirm.jsx)
+  AI 全权归类确认弹窗
+  - 展示分类 → 单元 → 卡片三级结构，支持展开折叠和名称编辑
+  - 2026-06-15: 中部内容区增加 data-mobile-scroll 和 touch-action: pan-y，确保 App WebView 中可上下滚动
+
+## InputBar (src/components/InputBar.jsx)
+  底部输入栏: [▾工具栏] [textarea(含展开图标↗)] [🎤麦克风] [↑发送]
+  - textarea: 自动扩展 min 1行 / max 3行，超3行滚动
+  - 展开图标: 输入框内右侧，点击弹出底部面板（标题栏 + 大textarea + 确认/取消）
+  - 辅行工具栏: 拍照 + 相册 + 总结密度
+  - 含 AI 语音整理功能 (clean-up speech text)
+
+## FloatingInputBar (src/components/FloatingInputBar.jsx)
+  右侧悬浮输入栏容器, 可拖拽
+
+## CategoryModal (src/components/CategoryModal.jsx)
+  分类名称编辑弹窗 (新建/重命名)
+
+## ConfirmDialog (src/components/ConfirmDialog.jsx)
+  通用确认对话框
+
+## ToastView (src/components/ToastView.jsx)
+  全局 Toast 提示
+
+## NewCardPanel (src/components/NewCardPanel.jsx)
+  新卡片管理弹窗 (OCR 识别/AI 生成后打开)
+
+## KnowledgePointConfirm (src/components/KnowledgePointConfirm.jsx)
+  知识点确认弹窗，位于生成流程 Step 1 → Step 2 之间
+  - .knowledge-point-confirm-overlay: 提高到 zIndex=120，避免被底部输入栏遮挡
+  - .knowledge-point-confirm-dialog: flex column + maxHeight: calc(100dvh - 32px)
+  - .knowledge-point-confirm-list: 中部内容独立滚动
+  - .knowledge-point-confirm-actions: sticky bottom + safe-area，确认按钮始终留在可视区域
+  - 确认后的知识点进入 attachOriginalKnowledgePoints，保证编辑卡片时“原始知识点” textarea 有值
+  - 底部操作栏新增"重新生成"按钮（btn-ghost 样式 + 刷新 SVG 图标），支持用户重新调用 AI 提取知识点
+  - 重新生成时会弹出确认提示，防止用户误操作丢失已编辑内容
+  - 重新生成流程：提取知识点 → 过滤章节标题 → 预去重 → 更新知识点列表
+
+## CrossCategoryConfirm (src/components/CrossCategoryConfirm.jsx)
+  跨分类 AI 全权归类结果确认弹窗
+  - 层级: overlay zIndex=130，高于知识点确认弹窗和底部输入栏
+  - 内容: 顶部统计（分类/单元/卡片数量）+ 中部三级结构独立滚动 + 底部粘性操作栏
+  - 交互: 分类/单元可折叠；分类名/单元名可输入重命名；卡片点击翻转查看原始知识点
+  - 移动端: 弹窗 maxHeight 使用 calc(100dvh - 32px)，底部按钮 minHeight 46px 并包含 safe-area
+
+## ErrorBoundary (src/components/ErrorBoundary.jsx)
+  应用级错误边界 (包裹 BrowserRouter)
+
+
+# ============================================================
+# 样式系统 (src/index.css)
+# ============================================================
+
+CSS 变量:
+  --color-* (颜色主题, 护眼模式覆盖)
+  --radius-* (圆角尺寸)
+  --text-xs/sm/base/lg/xl/2xl (字体大小, 支持设置切换)
+  --shadow-* (阴影层级)
+  --duration-*/--ease-* (动画时长与缓动)
+
+核心类:
+  .app-header / .page-container / .card / .card-flip-* / .fab
+  .btn / .btn-primary / .btn-secondary / .btn-ghost / .btn-danger
+  .settings-section / .settings-row / .settings-sub-header
+  .toast-container / .dialog-overlay / .modal-panel
+  .animate-page-in / anim-slide-* / anim-fade-in
+
+
+# ============================================================
+# 页面导航关系图
+# ============================================================
+
+      ┌────────────── 首页(Home) ──────────────┐
+      │             /                            │
+      │             ↓ 点击分类卡片               │
+      │         /category/:id                    │
+      │     (分类详情页: 卡片列表+输入栏)          │
+      └──────────────────────────────────────────┘
+                         ↑
+      ┌──────────── 背诵页(Memorize) ───────────┐
+      │            /memorize                      │
+      │     展示卡片(翻转) → 模式:顺序/活跃/艾宾/薄弱│
+      └──────────────────────────────────────────┘
+                         ↑
+      ┌──────────── 账号页(Account) ────────────┐
+      │            /account                       │
+      │  ↓点击统计卡片/天数条/背诵计划入口        │
+      │  /stats/:type (StatsDetail)              │
+      │  /memorize/plan (StudyPlan)              │
+      │  /stats/longterm (StatsLongTerm)         │
+      └──────────────────────────────────────────┘
+                         ↑
+      ┌──────────── 设置页(SettingsMain) ────────┐
+      │            /settings                      │
+      │  ├── /settings/ai-service   (AI 服务)    │
+      │  ├── /settings/speech      (语音识别)    │
+      │  ├── /settings/display     (显示与偏好)  │
+      │  └── /settings/cloud       (云端同步)    │
+      └──────────────────────────────────────────┘
+                         ↑
+      ┌──────────── 云端数据管理 ───────────────┐
+      │  /cloud-data (表列表)                     │
+      │  ↓ 点击某表                               │
+      │  /cloud-data/:table (明细)                │
+      └──────────────────────────────────────────┘
+
+
+# ============================================================
+# 长按文本选择防御 - 位置速查
+# ============================================================
+
+全局层:
+  [CSS]  src/index.css (*选择器 + html/body/#root)
+  [JS]   src/App.jsx (AppShell useEffect, document 级事件)
+
+页面层 (全部相同模式: preventTextMenu + onContextMenu + onSelectStart):
+  src/pages/Home.jsx              (外层 style div)
+  src/pages/Category.jsx          (外层 animate-page-in div)
+  src/pages/Memorize.jsx          (外层 flex column div)
+  src/pages/Account.jsx           (外层 flex column div)
+  src/pages/StatsDetail.jsx       (外层 animate-page-in div)
+  src/pages/CloudData.jsx         (外层 flex column div)
+  src/pages/CloudDataDetail.jsx   (外层 flex column div)
+  src/pages/SettingsAiService.jsx (外层 flex column div)
+  src/pages/SettingsSpeech.jsx    (外层 flex column div)
+  src/pages/SettingsDisplay.jsx   (外层 flex column div)
+
+组件层:
+  src/components/CardItem.jsx     (compact 和 large 两种卡片容器均加)
+    函数: preventTextMenu(e) 在组件顶层定义, 两处 return 均挂载
+
+注: SettingsMain.jsx 因内容仅为 3 个大分类卡片, 依赖全局层即可,
+    未单独加组件级, 若实测出现长按菜单, 按相同模式追加即可.

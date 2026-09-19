@@ -1,0 +1,494 @@
+﻿﻿================================================================================
+                    存储数据记录 - 项目补充记录
+                          更新日期: 2026-06-19
+================================================================================
+
+十二、全模块数据传递问题修复（P0+P1 批量修复） (2026-06-19) ───────────────────────────────────────────────────────────────────
+触发入口：
+  - 全项目数据传递机制系统性排查，覆盖 12 个核心文件
+  - src/services/aiService.js - 分类/卡片生成/知识点提取流程
+  - src/pages/Category.jsx - 三大分类功能入口
+  - src/pages/Memorize.jsx - 背诵页 regenerateCard
+  - src/pages/UnitTestPage.jsx - 单元检测/错题重做
+  - src/services/db.js - 本地 IndexedDB 事务
+  - src/services/sync.js - 云端同步（详见第十一节）
+  - src/services/testGradingService.js - AI 批改
+  - src/services/testQuestionService.js - 题库生成
+  - src/services/migrate.js - 数据迁移
+  - src/utils/cardKnowledgePoint.js - 知识点回填
+  - src/components/TargetCategorySelect.jsx - 目标分类选择
+  - src/components/NewCardPreviewPanel.jsx - 卡片预览
+
+核心修复（按模块）：
+  - aiService.js（11 项）：
+      · assignCards 批处理 cardIndex 语义（批次内 0-based 索引）
+      · mergeBatchCardResults 越界卡片保留（清除 kpMarker 而非丢弃）
+      · assignCardsCrossCategory 无 id 卡片使用索引兜底
+      · callAIClassify 硬编码 URL 替换为常量（SPARK_URL 等）
+      · loopMergeControl 单元替换时迁移 cardIndices
+      · mergeBatchCardResults 移除批次前缀，合并同名单元
+      · cross-category-auto persistTopicsToChapters 增加 needsTopicPersistence 标记
+      · assignCards 返回结构继承 chapterId/unitId
+      · generateNewTopicsAndUnits Number(null) 错误匹配
+      · validateClassificationResult 单元数校验（error→warning）
+      · classifySameCategoryReorganize/classifyCrossCategoryAuto 错误处理（区分 AI 调用失败与数据处理 bug）
+  - Category.jsx（6 项）：
+      · handleConfirmCrossCategory 遍历 chapters.units（四层结构）+ cardUpdates 增加 chapterId
+      · 三处 existingUnits/existingCards 映射保留 chapterId/categoryId
+      · CardSelectionModal 传递 chapters/feature/classificationDepth/onClassificationDepthChange props
+      · kpIndexToCard 使用带前缀 key（kp:${kpIndex} / idx:${i}）避免键冲突
+      · handleStepBack 从 cardGenStepSnapshots 恢复 mergeSummaryData
+  - Memorize.jsx（1 项）：regenerateCard 参数顺序错位（aiServiceMode 与 model 互换）
+  - testGradingService.js（1 项）：chapterId 未定义变量（meta 解构补全）
+  - db.js（8 项）：
+      · batchCreateCategoriesAndUnits 支持四层结构（创建 chapters + units 带 chapterId）
+      · createDataSnapshot/restoreDataSnapshot 覆盖 topics/reviewHistory/studyPlans
+      · deleteCategory/deleteUnit/deleteEmptyUnit 级联删除完整
+      · repairCardRelationsAfterImport 修复 testRecords（先建 questionId→cardId 映射）
+      · addWrongAnswer 设置 updatedAt
+      · addUnits 卡片 chapterId 优先使用卡片自身值
+  - UnitTestPage.jsx（5 项）：
+      · wrong 模式 localStorage 回退 bug（移除过早 return）
+      · cardId 兜底 questionId 修复（移除兜底，新增 getTestQuestionsByIds 函数）
+      · category 模式 chapterId 从题目获取
+      · URL 参数 chapterId 读取
+      · 错题重做模式设置 chapterId 状态
+  - testQuestionService.js（2 项）：
+      · updateQuestionBank 步骤 11.5 兜底填充 chapterId
+      · parseQuestionResponse 新增 extractQuestionsFromBrokenJson 兜底解析
+  - migrate.js（1 项）：TABLE_SCHEMAS 从 5 张表扩展到 13 张表，与 sync.js 对齐
+  - cardKnowledgePoint.js（1 项）：attachOriginalKnowledgePoints 优先保留 AI 返回的 kpMarker
+  - TargetCategorySelect.jsx（1 项）：disabled 逻辑运算符优先级 bug
+  - NewCardPreviewPanel.jsx（1 项）：移除未使用的 flatPanelCards prop
+
+存储表：
+  - 云端 chapters/units/cards 表：需添加 "order" INTEGER 字段
+  - 云端 wrong_answers 表：需添加 chapter_id, unit_id, unit_name, category_name, stem, question_type, updated_at 字段
+  - 云端 test_sessions 表：需添加 chapter_id, category_name, unit_name 字段
+  - 云端 test_records 表：需添加 category_name, unit_name 字段
+  - 云端 card_status 表：user_override 字段已存在，仅修复代码映射
+  - 本地 IndexedDB：无 schema 变更（v10 已包含所有字段）
+
+记录内容与逻辑：
+  - 四层结构（categories→chapters→units→cards）数据传递一致性：
+      · 所有批量操作（batchCreate/batchUpdate）均传递 chapterId
+      · 级联删除覆盖四层所有关联表
+      · 云端同步字段映射双向一致
+  - AI 分类流程数据完整性：
+      · kpMarker 全局索引确保卡片正确归类
+      · 批次合并时清除越界卡片的 kpMarker 而非丢弃
+      · 错误处理区分 AI 调用失败（降级 fallback）与数据处理 bug（记录 stack）
+  - 错题本系统数据完整性：
+      · wrongAnswers 必须包含 chapterId 关联章节
+      · testRecords/testSessions 冗余字段（category_name, unit_name）支持跨端展示
+  - 数据迁移一致性：
+      · migrate.js TABLE_SCHEMAS 与 sync.js 完全对齐（13 张表）
+      · JSON 导入导出覆盖所有 13 张业务表
+
+验证结果：
+  - SQL 检测：需执行的SQl（完整版）.txt 和 我需执行的SQl.txt（更新版）.txt 已更新
+  - npm run build：生产构建通过
+  - npm test：229/230 通过（1 个预存在 UI 布局测试失败，与本次修复无关）
+  - 额外修复：testGradingService.js gradeTest 调用 updateMasteryAndWrongAnswers 时补传 chapterId
+  - 额外修复：sync.js pullFromCloud 用 topicIds 过滤无效 topicId 引用的 chapters
+
+十一、sync.js 数据传递问题修复：字段映射与合并键修正 (2026-06-19) ───────────────────────────────────────────────────────────────────
+触发入口：
+  - src/services/sync.js - FIELD_MAP_CAMEL_TO_SNAKE / snakeToCamelMap / TABLE_SCHEMAS
+  - src/services/sync.js - pullFromCloud(db) 中 cardStatus 合并逻辑
+  - src/services/sync.js - pushToCloud(db) 返回的 stats
+
+核心修复：
+  - 修复 1 (P0)：userOverride 字段映射缺失
+      · FIELD_MAP_CAMEL_TO_SNAKE 添加 userOverride: 'user_override'
+      · snakeToCamelMap 添加 user_override: 'userOverride'
+      · card_status 表的 user_override 字段现在能正确双向同步
+  - 修复 2 (P0)：order 字段未同步
+      · chapters/units/cards 的 TABLE_SCHEMAS fields 添加 'order'
+      · snakeToCamelMap 已有 order_index: 'order' 和 order: 'order' 映射
+  - 修复 3 (P0)：wrongAnswers 字段未同步
+      · wrong_answers 的 fields 添加 unit_id, unit_name, category_name, stem
+      · FIELD_MAP_CAMEL_TO_SNAKE 添加 unitName/categoryName/stem 映射
+      · snakeToCamelMap 添加 unit_name/category_name/stem 映射
+  - 修复 4 (P1)：test_sessions 字段缺失
+      · test_sessions 的 fields 添加 category_name, unit_name, chapter_id
+  - 修复 5 (P1)：test_records 字段缺失
+      · test_records 的 fields 添加 category_name, unit_name
+  - 修复 6 (P1)：pullFromCloud cardStatus 合并键错误
+      · 旧实现：以 cardId 为 Map 键（违反 [cardId+categoryId] 唯一约束）
+      · 新实现：使用 `|` 组合键
+  - 修复 7 (P2)：camelToSnake 时间转换不覆盖 reviewed_at
+      · 添加 reviewed_at 时间戳转 ISO 字符串的逻辑
+  - 修复 8 (P2)：snakeToCamel 时间字段 null 处理不一致
+      · 旧实现：createdAt/updatedAt 为 null 时设为 Date.now()
+      · 新实现：null 保持 null（`v ? new Date(v).getTime() : null`）
+  - 修复 9 (P3)：pushToCloud 返回的 stats 缺少部分表
+      · 添加 testQuestions/testRecords/testSessions 计数到返回的 stats
+
+存储表：
+  - 云端 chapters/units/cards 表：需添加 "order" INTEGER 字段
+  - 云端 wrong_answers 表：需添加 chapter_id, unit_id, unit_name, category_name, stem, question_type, updated_at 字段
+  - 云端 test_sessions 表：需添加 chapter_id, category_name, unit_name 字段
+  - 云端 test_records 表：需添加 category_name, unit_name 字段
+  - 云端 card_status 表：user_override 字段已存在，仅修复代码映射
+
+记录内容与逻辑：
+  - 字段映射双向一致性：
+      · camelToSnake（上传）：camelCase → snake_case，通过 FIELD_MAP_CAMEL_TO_SNAKE 映射
+      · snakeToCamel（下载）：snake_case → camelCase，通过 snakeToCamelMap 映射
+      · TABLE_SCHEMAS fields 列表决定哪些字段被保留（过滤多余字段）
+  - cardStatus 合并键修正：
+      · 唯一性约束是 [cardId+categoryId]，旧实现仅用 cardId 会导致跨分类覆盖
+      · 新实现使用组合键 `|` 正确匹配
+  - 时间字段 null 处理：
+      · 下载时 null 时间保持 null，不再误设为当前时间
+      · 避免覆盖本地实际数据
+
+验证结果：
+  - npm run lint：6 个预先存在的 no-unused-vars 错误（与本次修复无关）
+  - npx vitest run src/__tests__/sync.test.js：15 个测试全部通过
+  - SQL 检测：需要更新 SQL 文件，已写入需执行的SQl（完整版）.txt 和 我需执行的SQl.txt（更新版）.txt
+十、背诵功能全面修复：cardStatus 合并策略与 SM-2 隔离 (2026-06-19) ───────────────────────────────────────────────────────────────────
+触发入口：
+  - src/services/db.js - setCardStatus(cardId, categoryId, status, opts)
+  - src/services/sync.js - pullFromCloud(db) 中 cardStatus 合并逻辑
+  - src/pages/Memorize.jsx - handleMark / handleComplete / loadCards
+
+核心函数：
+  - src/services/db.js setCardStatus(cardId, categoryId, status, { existingRecord, mode, chapterId }):
+      重构后的卡片状态更新函数，根据 mode 区分行为策略，返回更新后的记录对象
+      · ebbinghaus 模式：完整 SM-2 计算（repetitions/interval/easeFactor/nextReviewAt），保留原 userOverride 值 `ex.userOverride || false`
+      · sequential/active 模式 review：仅更新 status/updatedAt/reviewCount/mode/userOverride=true，不修改 SM-2 参数（隔离短期/长期计划）
+      · sequential/active 模式 mastered：仅更新 status，清除 userOverride
+      · sequential/active 模式 learning：仅更新 status，设置 userOverride=true
+      · weak 模式：保持既有 interval 缩短 / easeFactor 微增逻辑
+      · test 模式：只改 status/reviewCount；userOverride=true 时保护不被 mastered 覆盖
+      · 返回值：{ ...ex, ...update } 用于 handleMark 状态同步
+  - src/services/sync.js pullFromCloud(db) cardStatus 合并策略：
+      · 移除 `db.cardStatus.clear()`
+      · 基于 updatedAt 解决多设备冲突，保留较新记录
+      · 云端下载的 statusConverted 仅含 ebbinghaus 模式（云端只存储 ebbinghaus）
+      · 本地非 ebbinghaus 记录保留不变；同名 cardId 按 updatedAt 取较新者
+      · 合并日志：`[sync] cardStatus 合并完成: 更新 N 条, 新增 N 条, 跳过 N 条（本地较新）`
+  - src/pages/Memorize.jsx handleMark(status):
+      · 保存操作前状态用于失败回滚
+      · 即时更新本地 React state（predictedRecord）
+      · 等待 setCardStatus 返回实际记录 actualRecord
+      · 用 actualRecord 修正 fullCardStatuses
+      · 失败时回滚 cardStatuses 和 fullCardStatuses，显示 Toast
+
+存储表：
+  - 本地 cardStatus 表：userOverride 字段保留策略变更
+      · sequential/active review/learning → userOverride=true
+      · sequential/active mastered → userOverride=false（清除）
+      · ebbinghaus → 保留原值 `ex.userOverride || false`（不再强制 false）
+      · test 模式 → 不修改 userOverride
+  - 本地 cardStatus 表：SM-2 参数隔离
+      · sequential/active 模式不修改 repetitions/interval/easeFactor/nextReviewAt
+      · 仅 ebbinghaus 模式完整计算 SM-2 参数
+      · weak 模式保持既有 interval 缩短逻辑
+  - 本地 wrongAnswers 表：weak 模式数据源
+      · loadCards 时 `dbInstance.wrongAnswers.where('categoryId').equals(categoryId).toArray()` 加载错题卡片 ID 集合
+      · filteredCards 计算：`base.filter(c => wrongAnswerCardIds.has(c.id))`
+      · 无错题时返回空数组 []（不再回退显示全部卡片）
+  - 云端 card_status 表：无 schema 变更，仅同步逻辑变更（合并策略）
+
+记录内容与逻辑：
+  - cardStatus 合并策略（Pull 同步）：
+      · 旧实现：`db.cardStatus.clear()` 后 bulkAdd 云端数据，导致本地非 ebbinghaus 记录丢失
+      · 新实现：保留本地非 ebbinghaus 模式记录，基于 updatedAt 合并 ebbinghaus 记录
+      · 冲突解决：同名 cardId 按 updatedAt 取较新者（cloudUpdated > localUpdated 时更新，否则跳过）
+      · 日志输出：更新/新增/跳过条数
+  - SM-2 参数隔离：
+      · 短期计划（sequential/active）标记 review 不再污染长期计划（ebbinghaus）的 SM-2 参数
+      · 避免艾宾浩斯复习节奏被打乱
+      · userOverride 字段标记用户手动判断，test 模式答对时不覆盖
+  - weak 模式数据源统一：
+      · 旧：基于 cardStatuses[id] === 'review' 筛选（与错题本数据源不一致）
+      · 新：基于 wrongAnswers 表筛选（与错题本数据源一致）
+      · addWrongAnswer 所有模式 status==='review' 时均写入错题本（统一来源设计）
+  - 移除轮数管理：
+      · db.js 移除 incrementCategoryRound / decrementCategoryRound / getCategoryRound / setCategoryRound / getCategoryRoundsFromLocal
+      · sync.js 移除 round_count 字段的 push/pull 逻辑
+      · 背诵功能不再依赖"轮数"概念，改用 lastReviewedCardId 实现进度恢复
+
+验证结果：
+  - npm run build：生产构建通过
+  - 热更新预览：sequential/active 模式标记 review 不影响艾宾浩斯复习节奏
+  - 热更新预览：weak 模式无错题时显示空状态
+  - 多设备同步：Pull 不再清空本地 cardStatus，基于 updatedAt 合并保留较新记录
+  - SQL 检测：本次无 schema 变更，不需要更新 SQL 文件
+
+九、主题持久化与两步法分类 (2026-06-18) ───────────────────────────────────────────────────────────────────
+触发入口：
+  - AI 分类流程（智能单元整理、AI全权归类、指定分类归类）完成后
+  - src/services/aiService.js - planStructure() / assignCards() / validateClassificationResult() / fixClassificationResult()
+  - src/services/db.js - getTopicsByCategory / createTopic / getTopicByName / getTopicById / updateTopic / deleteTopic / getChaptersByTopic
+
+核心函数：
+  - aiService.js planStructure(): 结构规划函数，分析卡片知识点分布，规划章节/单元层级结构，返回不含卡片的结构方案
+  - aiService.js assignCards(): 卡片分配函数，按结构方案分批分配卡片（每批 ≤ 30 张）
+  - aiService.js validateClassificationResult(): 分类结果校验函数，校验结构/分配/命名合理性
+  - aiService.js fixClassificationResult(): 分类结果修正函数，小单元合并、大单元拆分、未分配卡片处理
+  - aiService.js persistTopicsToChapters(): 主题持久化，将 AI 生成的主题名称创建/获取 topic 记录并关联章节
+  - db.js getTopicsByCategory(categoryId): 获取分类下所有主题
+  - db.js createTopic(categoryId, name): 创建主题
+  - db.js getTopicByName(categoryId, name): 按名称查找主题（用于去重）
+  - db.js getTopicById(topicId): 根据 ID 获取单个主题
+  - db.js updateTopic(topicId, updates): 更新主题
+  - db.js deleteTopic(topicId): 删除主题（关联章节的 topicId 置空）
+  - db.js getChaptersByTopic(topicId): 获取主题下所有章节
+
+存储表：
+  - 本地 topics 表：id, categoryId, name, createdAt（v10 新增）
+  - 本地 chapters 表：新增 topicId 字段（v10 新增）
+  - 云端 topics 表：id, category_id, name, created_at, user_id
+  - 云端 chapters 表：新增 topic_id 字段
+
+记录内容与逻辑：
+  - 两步法流程：结构规划(planStructure) → 结构校验 → 卡片分配(assignCards) → 分配校验 → 二次修正
+  - 主题生命周期：聚类生成(临时) → 用户确认(临时) → 归类约束(临时) → 归类完成(持久化到 topics 表)
+  - 主题持久化时机：归类完成后，为每个唯一主题名称创建/获取 topic 记录
+  - 章节关联：创建章节时设置 topic_id 字段关联对应主题
+  - 三种分类方式均已适配两步法：classifySameCategoryReorganize / classifyCardsByCategoryContent / classifyCrossCategoryAuto
+
+校验规则：
+  - 结构校验：章节数 1-10，每章节单元数 2-10
+  - 分配校验：每单元卡片数 2-50，所有卡片已分配，无重复
+  - 命名校验：禁止编号命名（"第一部分"、"单元1"）、时间命名（"第一天"），长度限制（章节 ≤ 12 字，单元 ≤ 16 字）
+
+修正策略：
+  - 小单元合并：单元卡片数 < 2 时合并到相邻单元
+  - 大单元拆分：单元卡片数 > 50 时按关键词均匀拆分
+  - 未分配卡片：按关键词相似度匹配归入最相似单元
+
+验证结果：
+  - npm run build：生产构建通过
+
+八、使用指南种子数据去重与升级 (2026-06-17) ───────────────────────────────────────────────────────────────────
+触发入口�?  - src/App.jsx �?AppShell useEffect �?seedUsageGuide()
+  - src/context/AppContext.jsx �?loadCategories() �?deduplicateUsageGuide()
+
+核心函数�?  - src/utils/seedData.js �?seedUsageGuide()：v2 版本�? 个单�?30 张卡�?  - src/services/db.js �?deduplicateUsageGuide()：合并重复「使用指南」分�?
+存储表：
+  - 本地 categories / units / cards / cardStatus / wrongAnswers
+  - 不涉及云端表结构变更
+
+记录内容与逻辑�?  - 种子版本 key: seed_usage_guide_v2（升级自 v1�?  - 延迟 1.5s 等待登录状态确定后再执�?  - 云端用户（state.isLoggedIn && !state.user.local）跳过种子创�?  - 本地用户无分类时创建使用指南
+  - 执行前先调用 deduplicateUsageGuide() 清理重复
+  - deduplicateUsageGuide 策略：保留最早创建的「使用指南」，将其他同名分类的卡片/单元/cardStatus/wrongAnswers 迁移后删�?  - loadCategories() 中也调用 deduplicateUsageGuide()，确保每次加载分类时都清理重�?
+重复原因分析�?  - 旧版种子使用 localStorage key 'seed_usage_guide_v1'（设备级标识�?  - 新设备安装时 localStorage 为空，种子会创建「使用指南�?  - 用户登录云端后，云端同步下载的「使用指南」与本地种子重复
+  - 修复后：云端用户不创建种子，且有 deduplicateUsageGuide 兜底清理
+
+使用指南内容（v2）：
+  - 结构：分�?�?章节 �?单元 �?卡片 四级
+  - 5 个章节�? 个单元�?0 张卡�?  - 基础入门：快速入门（4 张）：创建卡片、卡片结构、分类章节单元关系、标签页导航
+  - AI 功能：AI 智能生成卡片�? 张）：AI 生成流程、知识点确认、切�?AI 服务、智能归�?  - 录入方式：语音录入（3 张）+ 图片识别�? 张）
+  - 学习与检测：背诵学习�? 张）+ 单元检测（5 张）
+  - 数据管理：错题本与题库（3 张）+ 云端同步与数据管理（4 张）
+
+验证结果�?  - npm run build：生产构建通过
+
+七、题库管理界面重构：分类→章节→单元→题�?三级选择�?026-06-17 更新�?──────────────────────────────────────────────────────────────────
+触发入口�?  - src/pages/UnitTestMain.jsx �?"题库管理"按钮 �?navigate('/test/question-bank')
+  - src/pages/QuestionBankPage.jsx �?三步（或两步）选择流程
+
+核心函数�?  - src/pages/QuestionBankPage.jsx �?ChapterSelector 组件（新增：章节选择列表�?  - src/pages/QuestionBankPage.jsx �?UnitSelector 组件（单元选择列表，支持按章节筛选）
+  - src/pages/QuestionBankPage.jsx �?QuestionList 组件（单元内题目列表+操作�?  - src/services/db.js �?getChaptersByCategory / getUnitsByChapter（新增调用）
+  - src/services/db.js �?getTestQuestionsByCategory / deleteTestQuestion / updateTestQuestion
+
+存储表：
+  - 本地 chapters：按 categoryId 加载章节列表，统计每个章节下的单元数和题目总数
+  - 本地 units：按 chapterId 筛选展示（有章节时）或�?categoryId 展示全部（无章节时）
+  - 本地 testQuestions：按 unitId 分组展示，无归属的归�?其他题目"
+  - 不涉及云端表结构变更（题目仍�?unitId 分组，章节仅用于展示层级�?
+记录内容与逻辑�?  - 步骤1：选择分类 �?下拉框选择分类，加载该分类下的章节和题目数�?  - 步骤2（有章节时）：选择章节 �?展示章节列表（章节名、单元数、题目总数），点击进入章节下的单元列表
+  - 步骤2（无章节时）：直接进入单元列表（兼容原有流程，降级为两步�?  - 步骤3：选择单元 �?点击单元进入题目列表，展示该单元下所有题�?  - 章节列表每项显示：章节名 + 单元�?+ 题目总数徽章
+  - 单元列表支持"其他题目（未归属单元�?入口，展�?unitId 为空的题�?  - 题目列表支持：点击答题、编辑、删除、手动添加、清空单�?  - 返回按钮：单元列�?�?有章节时回章节列表，无章节时回分类选择
+  - 章节列表 �?回分类选择
+  - 切换分类时自动重置章节和单元选择
+
+UI 美化�?  - 分类选择器：圆角卡片容器 + 图标 + select 下拉框（.qb-selector-card�?  - 章节卡片：白色卡�?+ 左侧 4px 蓝色竖条 + 章节名加�?+ 右侧徽章 + 箭头�?qb-chapter-card�?  - 单元卡片：左侧小圆点 + 单元�?+ 题目数徽�?+ 箭头
+  - 题目卡片：题型标签（彩色徽章�? 难度标签（绿/�?红）+ 知识点标�?  - 所有按�?minHeight �?44px，符合移动端触控标准
+  - CSS 类定义：src/index.css L3779-L3871�?qb-selector-card, .qb-chapter-card, .qb-breadcrumb, .qb-stat-badge 等）
+
+验证结果�?  - npm run build：生产构建通过
+  - 热更新预览：分类选择→章节列表→单元列表→题目列表流程正�?  - 无章节分类降级为原有两步流程正常
+
+
+六、未完成测试会话（断点续考）进入答题记录页（2026-06-15�?──────────────────────────────────────────────────────────────────
+触发入口�?  - src/pages/AnswerRecordPage.jsx �?加载未完成测试列�?+ 三个操作按钮
+  - src/pages/UnitTestPage.jsx �?URL 参数 ?resume=continue|restart 控制续�?  - src/services/db.js �?getAllUnfinishedTestSessions / getTestSession / clearTestSessionAnswers
+
+核心函数�?  - src/services/db.js �?getAllUnfinishedTestSessions(userId)：查 testSessions 表中 userId 匹配�?isCompleted=false 的全部会话，�?lastSavedAt 倒序
+  - src/services/db.js �?getTestSession(id)：按 id 查单条会话，用于答题记录页展开题目预览
+  - src/services/db.js �?clearTestSessionAnswers(id)：把 userAnswers/currentIndex/elapsed/feedbackMap/answers/startTime 清零/重置，保�?questions 不变
+  - src/services/db.js �?addTestSession / updateTestSession：保存时增加 unitId / categoryId / elapsed / instantFeedback / feedbackMap / answers 字段冗余
+  - src/pages/AnswerRecordPage.jsx �?handleContinueSession / handleRestartSession / handleDeleteSession + handleConfirmAction�?      · 继续/重新开�?�?居中弹窗 �?确认 �?跳转 /test/unit?mode=...&unitId|categoryId=...&resume=continue|restart
+      · 删除 �?居中弹窗 �?deleteTestSession(id) �?从列表移�?  - src/pages/UnitTestPage.jsx �?useEffect(checkSession)�?      · resume=continue 时把 session.questions/answers/currentIndex/elapsed/markedQuestions/feedbackMap 灌入组件，跳过弹�?      · resume=restart 时清�?session 进度，由 loadQuestions 加载最新题�?      · 空字符串时保留原�?有未完成会话时弹窗询�?逻辑
+      · session 题目若被用户全部删除则自�?deleteTestSession，不显示提示
+      · session 题目若部分被删除则过滤后恢复，并清理 answers 字典中的孤立 key
+
+存储表：
+  - 本地 testSessions：新�?unitId / categoryId / elapsed / instantFeedback / feedbackMap / answers 字段写入
+  - 本地其它表：本次仅读�?cards/units 等做"题目是否仍存�?校验，不�?  - [2026-06-15 补充] 云端 test_sessions�?      · 需执行�?SQL（更新版�?txt v3.8 已新�?unit_id / category_id 两列与对应索�?      · sync.js �?TABLE_SCHEMAS.test_sessions.fields 已追�?unit_id / category_id
+      · �?session 缺少这两列时，loadAll/getAllUnfinishedTestSessions 仍能查到；跳转时�?session.typeId 兜底
+      · 跨端登录时云端下拉会�?unit_id/category_id 还原�?localStorage unitId/categoryId（snakeToCamel 映射已就位）
+
+记录内容与逻辑�?  - 自动保存触发时机不变：saveCurrentSession 5 秒一�?+ 页面离开�?saveCurrentSession
+  - saveCurrentSession 写入字段：testType / typeId / unitId / categoryId / questions / userAnswers / markedQuestions / currentIndex / startTime / lastSavedAt / isCompleted / elapsed / instantFeedback / feedbackMap / answers
+  - 答题完成（handleSubmitAll）时 deleteTestSession(sessionId) 清理会话，避免占�?  - 答题记录页加载：getAllTestRecords() + getAllUnfinishedTestSessions(userId) 并行
+  - 答题记录页确认弹窗：useMemo 根据 confirmTarget.action 动态生成标�?描述/按钮文案/危险样式
+  - 单元检测入口（/unit-test）的弹窗逻辑不变：有未完成会话时�?继续/重新开�?提示
+
+验证结果�?  - npm test�?94 / 195 通过�? 个预存在 failure 与本次无关）
+  - npm run build：生产构建通过
+  - [2026-06-15 补充] SQL 已更新到 v3.8：需执行�?SQL（更新版�?txt 新增 ALTER TABLE test_sessions ADD COLUMN IF NOT EXISTS unit_id/category_id + 2 个索�?  - [2026-06-15 补充] sync.js �?TABLE_SCHEMAS.test_sessions.fields 追加 'unit_id', 'category_id'，跨端登录时云端下拉可还�?unitId/categoryId
+  - [2026-06-15 补充] 修复 PostgreSQL 42P16 视图列数不兼容问题：
+      · 需执行�?SQL（更新版�?txt �?0 节用 `DO $$ ... DROP VIEW IF EXISTS public.diagnostic_view CASCADE` 显式删掉旧视�?      · CASCADE 仍失败时回退�?RENAME 改名
+      · �?5 节把 `CREATE OR REPLACE VIEW` 改成 `CREATE VIEW`，避免列数不匹配时报�?      · 详细记录�?易报错事�?txt "SQL 视图列数不兼�? 一�?  - [2026-06-15 补充] 同时�?需执行�?SQL（完整版�?txt 中同样位置的 diagnostic_view 改为 CREATE VIEW（紧�?DROP CASCADE），保证新装环境也是一致模�?
+
+
+一、云端下载后卡片归属修复
+──────────────────────────────────────────────────────────────────
+触发入口�?  - src/context/AppContext.jsx �?loadCategories()
+  - src/services/sync.js �?syncEngine.pullFromCloud()
+  - src/services/sync.js �?pullTableFromCloud(categories/units/cards)
+
+核心函数�?  - src/services/db.js �?repairCardRelationsAfterImport()
+
+存储表：
+  - 本地 categories / units / cards
+  - 云端不新增表，不需要新�?SQL
+
+记录内容与逻辑�?  - 账号页统计使�?db.cards.count()，只�?cards 表有记录就会显示总数�?  - 记录页和背诵页依�?cards.categoryId + cards.unitId �?categories/units 的父子关系�?  - 若下载后卡片缺少 categoryId �?unitId 指向不存在的单元，会导致账号页有数量但记录页/背诵页不可见�?  - 修复函数会优先按已有 unitId 回填 categoryId；其次按 categoryId 挂到已有/新建单元；都无法匹配时创建「云端下载分类」和「云端下载卡片」恢复入口�?
+验证结果�?  - 热更新预览中账号页总卡�?11，记录页恢复为共 11 张�?  - 背诵页选择「云端下载分类」后可加�?10 张恢复卡片�?
+二、智能归类任�?运行时去重与同步提示
+──────────────────────────────────────────────────────────────────
+触发入口�?  - src/pages/Category.jsx �?handleCardSelectionNext()
+  - src/pages/Category.jsx �?handleConfirmUnitReorganize()
+  - src/pages/Category.jsx �?handleConfirmCrossCategory()
+  - src/pages/Category.jsx �?syncAndOfferUndo()
+
+核心函数�?  - src/utils/smartOrganizeUx.js �?dedupeCardsByKnowledgePoint()
+  - src/utils/smartOrganizeUx.js �?buildSmartOrganizeSuccessMessage()
+  - src/utils/smartOrganizeUx.js �?buildOperationErrorMessage()
+
+存储表：
+  - 不新增本地表，不新增云端表，不新增字段�?  - 本地整理仍复�?cards / units / categories 及关联表的既有批量事务�?  - 云端同步仍复用现�?Supabase categories / units / cards 等表�?
+记录内容与逻辑�?  - AI 调用前仅在运行时根据 cards.knowledge_point 去重，重复知识点卡片不进入本�?AI 规划，不修改数据库原始记录�?  - 确认执行后仍通过 batchUpdateCardsUnit / batchUpdateCardsCategoryAndUnit / batchCreateCategoriesAndUnits 等既有事务写入�?  - 本地事务成功后调�?syncToSupabase(dbInstance) 同步云端；同步前提示“正在同步数据到云端...”�?  - 本次不涉及表结构变化，因此不需要更新“需执行�?SQL（完整版�?txt”和“需执行�?SQL（更新版�?txt”�?
+验证结果�?  - smartOrganizeUx.test.js、cardSelectionModalUi.test.js、aiService.sameCategoryReorganize.test.js 通过�?  - npm run build 通过�?
+二、跨分类指定分类归类（任�?3�?──────────────────────────────────────────────────────────────────
+触发入口�?  - src/pages/Category.jsx �?单元概览右侧菜单 �?指定分类归类
+  - 流程：CardSelectionModal 选择卡片 �?TargetCategorySelect 选择/新建目标分类 �?AI 生成目标分类内单元方�?�?UnitReorganizeConfirm 确认 �?执行移动
+
+核心函数�?  - src/services/db.js �?batchUpdateCardsCategoryAndUnit(cardIdToCategoryUnitMap, options)
+  - src/services/db.js �?deleteEmptyUnit(unitId)
+  - src/services/db.js �?deleteEmptyUnits(categoryId)
+  - src/services/db.js �?deleteEmptyCategory(categoryId)
+  - src/services/db.js �?deleteCategory(categoryId) 级联删除完善
+
+存储表：
+  - 本地 categories / units / cards / cardStatus / bookmarks / wrongAnswers / testQuestions / testRecords / testSessions
+  - 云端不新增表，不需要新�?SQL
+
+记录内容与逻辑�?  - batchUpdateCardsCategoryAndUnit 在事务内批量更新 cards.categoryId �?cards.unitId�?  - 同步�?cardStatus.categoryId、wrongAnswers.categoryId、testQuestions.categoryId/unitId、testRecords.categoryId/unitId 更新到目标分�?单元�?  - bookmarks 只按 cardId 关联，不需要修改，移动后继续保留收藏�?  - options.cleanupEmptySource=true 时，移动后自动删除原分类下空单元；若原分类已无任何卡片，则删除原分类�?  - deleteCategory 现在会同步清理分类关联的单元、卡片、学习状态、收藏、错题、测试题、答题记录和未完成会话�?
+验证结果�?  - npm test�?8 个测试全部通过�?  - npm run build：生产构建通过�?  - SQL 检测：仅新�?完善本地 IndexedDB 操作逻辑，未新增云端字段或表，本次不需要更�?SQL 文件�?
+三、跨分类 AI 全权归类（任�?4�?──────────────────────────────────────────────────────────────────
+触发入口�?  - src/pages/Category.jsx �?单元概览右侧菜单 �?AI 全权归类
+  - 流程：CardSelectionModal 选择卡片 �?aiService 生成全量分类/单元方案 �?CrossCategoryConfirm 确认 �?执行数据库事�?�?导航首页
+
+核心函数�?  - src/services/aiService.js �?classifyCardsByCategoryContent(..., { mode: 'cross-category-auto' })
+  - src/components/CrossCategoryConfirm.jsx �?分类/单元/卡片三级确认与重命名
+  - src/services/db.js �?batchCreateCategoriesAndUnits(categoriesData)
+  - src/services/db.js �?batchUpdateCardsCategoryAndUnit(assignments, { cleanupEmptySource: true })
+
+存储表：
+  - 本地 categories：AI 确认后新建分类，记录 name / createdAt
+  - 本地 units：AI 确认后新建单元，记录 categoryId / name / order / createdAt
+  - 本地 cards：批量更�?categoryId / unitId / updatedAt
+  - 本地 cardStatus：同步更�?categoryId，保证学习状态跟随卡片迁�?  - 本地 wrongAnswers：同步更�?categoryId，保证错题本仍能按新分类分组
+  - 本地 testQuestions / testRecords：同步更�?categoryId / unitId，保证题库和答题记录关联到新分类/单元
+  - bookmarks：仍�?cardId 关联，不需要修�?  - 云端不新增表，不需要新�?SQL
+
+记录内容与逻辑�?  - AI 提示词要求最多创�?5 个分类，超出时合并相似分类�?  - AI 返回的方案只作为草稿，用户可�?CrossCategoryConfirm 中修改分类名和单元名�?  - batchCreateCategoriesAndUnits 先批量创建所有新分类和新单元，并返回临时 tempId 到真�?id 的映射�?  - batchUpdateCardsCategoryAndUnit 再按映射批量移动所选卡片，并同步学习状态、错题、题库和答题记录�?  - cleanupEmptySource=true 时，移动后自动删除原分类下空单元；若原分类无剩余卡片和单元，则删除原分类�?
+验证结果�?  - npm test -- src/__tests__/db.test.js�?5 个测试全部通过�?  - npm run build：生产构建通过�?  - SQL 检测：本次只复用并完善现有本地/云端字段 categories、units、cards、card_status、wrong_answers、test_questions、test_records，不新增云端字段或表，因此无需新增 SQL�?
+四、数据一致性与云端同步保障（任�?5�?──────────────────────────────────────────────────────────────────
+触发入口�?  - src/pages/Category.jsx �?智能单元整理、指定分类归类、AI 全权归类、卡片删除、卡片移动、批量删�?  - src/pages/Memorize.jsx �?背诵页卡片编辑、删除、移�?  - src/services/sync.js �?syncToSupabase(dbInstance)
+
+核心函数�?  - src/services/db.js �?batchUpdateCardsCategoryAndUnit()
+  - src/services/db.js �?batchUpdateCardsUnit()
+  - src/services/db.js �?deleteUnit() / deleteCategory() / deleteEmptyUnit() / deleteEmptyUnits() / deleteEmptyCategory()
+  - src/services/db.js �?createDataSnapshot() / restoreDataSnapshot()
+  - src/services/sync.js �?syncToSupabase() / retryPendingSyncs()
+  - src/pages/Category.jsx / src/pages/Memorize.jsx �?syncAndOfferUndo()
+
+存储表：
+  - 本地 categories / units / cards / cardStatus / bookmarks / wrongAnswers / testQuestions / testRecords / testSessions
+  - 云端沿用既有 categories / units / cards / card_status / bookmarks / wrong_answers / test_questions / test_records / test_sessions
+  - 不新增云端字段或表，不需要新�?SQL
+
+记录内容与逻辑�?  - 批量更新卡片归属时，事务内校验目标分类与目标单元匹配；同步更�?cards.categoryId/unitId、cardStatus.categoryId、wrongAnswers.categoryId、testQuestions.categoryId/unitId、testRecords.categoryId/unitId�?  - bookmarks 只按 cardId 关联，移�?归类时保持不变�?  - 删除单元时，事务内删除该单元�?cards、cardStatus、bookmarks、wrongAnswers、testQuestions、testRecords、testSessions�?  - 删除分类时，事务内删除该分类关联�?units、cards、cardStatus、bookmarks、wrongAnswers、testQuestions、testRecords、testSessions�?  - 分类�?背诵页关键修改操作前创建完整本地快照；操作成功后 3 秒内 Toast 显示“撤销”，点击�?restoreDataSnapshot() 回滚所有本地表，并重新 syncToSupabase()�?  - 本地事务成功后立即调�?syncToSupabase()；成功显示绿色提示，失败显示黄色提示并加入自动重试队列。网络恢复或短延迟后 retryPendingSyncs() 自动重试�?
+验证结果�?  - npm test�? 个测试文件�?8 条测试全部通过�?  - npm run build：生产构建通过�?  - SQL 检测：本次为本地事务、快照回滚、同步重试和前端提示逻辑，不涉及 Supabase schema 变更，因此无需更新 SQL 文件�?
+五、分�?单元检测题目归类修复（2026-06-15�?──────────────────────────────────────────────────────────────────
+触发入口�?  - src/pages/UnitTestMain.jsx �?分类检�?/ 单元检�?/ 更新题库 按钮
+  - src/services/testQuestionService.js �?updateQuestionBank()
+
+核心函数�?  - src/services/testQuestionService.js �?updateQuestionBank() �?394-411 �?  - src/services/testQuestionService.js �?matchQuestionsToCards() �?259-302 �?  - src/utils/helpers.js �?extractJsonFromAiResponse() �?238-267 �?
+存储表：
+  - 本地 test_questions：新�?unitId / categoryId 字段写入
+  - 修复前：questionItems 构造时丢弃�?matchQuestionsToCards 添加�?unitId/categoryId
+  - 修复后：questionItems 显式包含 unitId: q.unitId || null, categoryId: q.categoryId || null
+  - 云端 test_questions 表：unitId / categoryId 字段已存在（Supabase 建表时有），无需新增 SQL
+
+记录内容与逻辑�?  - AI 生成题目后，matchQuestionsToCards 通过 knowledgePoint 匹配回原始卡片获�?unitId/categoryId
+  - questionItems 保存时需显式包含这两个字段，否则题目保存后无归属，QuestionBankPage 全部归入"其他"
+  - 同时修复 extractJsonFromAiResponse 严格模式正则优先级：数组�?JSON ([...]) 优先用数组正则匹配，
+    避免对象正则贪婪匹配导致无效 JSON
+
+验证结果�?  - npm test�?8/69 通过�? 个失败为已有测试，非本次引入�?  - npm run build：生产构建通过
+  - SQL 检测：test_questions 表已�?unitId / categoryId 字段，仅修复前端写入遗漏，不需要更�?SQL
+
+
+章节概念引入后出题流程排查与修复�?026-06-17�?──────────────────────────────────────────────────────────────────
+触发入口�?  - src/pages/UnitTestMain.jsx �?handleChapterTest / handleChapterReview / handleChapterUpdateBank
+  - src/services/testQuestionService.js �?updateQuestionBank(testType='chapter', ...)
+
+核心函数�?  - src/services/testQuestionService.js �?updateQuestionBank（步2：categoryId 获取修复�?  - src/services/testQuestionService.js �?generateQuestionsForStrongModel（markerDataMap 新增 chapterId�?  - src/services/testQuestionService.js �?generateQuestionsForWeakModel（markerDataMap 新增 chapterId�?  - src/services/testQuestionService.js �?runLegacySingleBatch（markerDataMap 新增 chapterId�?  - src/services/testQuestionService.js �?matchQuestionsToCards（返回值新�?chapterId�?  - src/services/testQuestionService.js �?updateQuestionBank（questionItems 新增 chapterId�?  - src/services/db.js �?addTestQuestions（新�?chapterId 字段�?  - src/services/db.js �?getTestQuestionsByChapter（新增函数）
+
+存储表：
+  - 本地 testQuestions：新�?chapterId 字段写入（v7 表已有此字段，本次修复确保写入）
+  - 本地 cards：card.chapterId 作为 chapterId 来源
+  - 不涉及云端表结构变更
+
+记录内容与逻辑�?  - 章节检测入口：handleChapterTest �?updateQuestionBank(TEST_TYPES.CHAPTER, chapterId)
+  - 章节复习入口：handleChapterReview �?getReviewQuestions(TEST_TYPES.CHAPTER, chapterId)
+  - 章节更新题库：handleChapterUpdateBank �?updateQuestionBank(TEST_TYPES.CHAPTER, chapterId)
+  - categoryId 获取：UNIT �?CHAPTER 均从 cards[0]?.categoryId 获取，CATEGORY 使用 id
+  - chapterId 数据流：card.chapterId �?markerDataMap �?matchQuestionsToCards �?questionItems �?addTestQuestions �?testQuestions �?  - getTestQuestionsByChapter：通过 chapterId 索引直接查询章节下所有题�?
+�š����Ȿ�½ڻ����£�2026-06-17��
+������������������������������������������������������������������������������������������������������������������������������������
+������ڣ�
+  - src/pages/UnitTestPage.jsx �� ��Ԫ��������ɺ�д������¼
+  - src/services/testGradingService.js �� AI ���ֺ�д������¼
+  - src/services/db.js �� addWrongAnswer / getWrongAnswersByChapter
+
+���ĺ�����
+  - src/services/db.js �� addWrongAnswer(cardId, categoryId, questionType, { unitId, chapterId, ... })��д������¼ʱ���� chapterId
+  - src/services/db.js �� getWrongAnswersByChapter(chapterId)�����½ڲ�ѯ�����б���������
+
+�洢����
+  - ���� wrongAnswers������ chapterId �ֶ�д�루v7 �����ֶΣ������޸�ȷ��д�룩
+  - ���� wrongAnswers��v9 ���� [categoryId+chapterId] ��������
+  - �ƶ� wrong_answers���Ѱ��� chapter_id �ֶΣ�sync.js TABLE_SCHEMAS �Ѷ��壩
+
+��¼�������߼���
+  - UnitTestPage.jsx������ chapterId ״̬���� unit �����л�ȡ�����ݸ� addWrongAnswer
+  - testGradingService.js��gradeTest �������� chapterId �����������ݸ� addWrongAnswer
+  - db.js������ getWrongAnswersByChapter(chapterId) ������֧�ְ��½ڲ�ѯ����
+  - db.js��v9 ���ݿ�������Ϊ wrongAnswers ������ [categoryId+chapterId] ��������
+  - ������·��unit.chapterId �� UnitTestPage.chapterId �� gradeTest.chapterId �� addWrongAnswer.chapterId �� wrongAnswers.chapterId
+  - ��ʷ���ݼ��ݣ����д����¼ chapterId Ϊ��ʱ���ڴ��Ȿҳ����ʾΪ"δ����"�½�
+
+��֤�����
+  - npm run build����������ͨ��

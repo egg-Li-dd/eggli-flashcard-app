@@ -1,0 +1,20 @@
+{
+  "appId": "com.eggli.flashcards",
+  "appName": "egg李",
+  "webDir": "dist",
+  "backgroundColor": "#FAF8F5",
+  "android": {
+    "buildOptions": {
+      "minifyEnabled": false
+    },
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

@@ -1,0 +1,440 @@
+艾宾浩斯背诵计划系统 - 详细应用报告
+
+文档版本: v1.1  
+生成日期: 2026-06-17  
+适用范围: AI Flashcard App 背诵计划功能（含章节支持）
+
+---
+
+目录
+
+1. 系统概述 - 什么是艾宾浩斯？为什么要用它？
+2. 核心算法 SM-2 - 数学公式与完整规则说明
+3. 延迟复习惩罚机制 - 没有按时复习该怎么办？
+4. 数据存储结构 - 数据库表设计与字段说明
+5. 前端界面流程 - 用户看到什么，点击哪里
+6. 背诵模式隔离 - 5种模式互不干扰的设计
+7. 未来预测系统 - 智能预测未来7天/30天复习量
+8. 记忆阶段划分 - 从「未学习」到「长期记忆」
+9. 测试评分与艾宾浩斯的联动 - 答错了怎么办？
+10. 云端同步策略 - 换设备也能继续复习
+11. 关键代码文件索引 - 开发者快速定位入口
+
+---
+
+1. 系统概述
+
+1.1 什么是艾宾浩斯遗忘曲线？
+
+德国心理学家赫尔曼·艾宾浩斯在1885年发现了人类记忆的遗忘规律。遗忘曲线表明：
+- 学习后的第1天，记忆力保留约33%
+- 第2天，保留约28%
+- 第6天，保留约25%
+- 31天后，保留约21%
+
+核心发现: 如果在即将遗忘的时候进行复习，可以用最少的时间获得最佳的记忆效果。
+
+1.2 本App如何应用艾宾浩斯？
+
+我们使用SM-2算法（Anki等主流记忆软件的核心算法），它基于艾宾浩斯理论，但通过用户的实际复习反馈动态调整复习间隔。
+
+
+
+1.3 系统架构图
+
+
+
+---
+
+2. 核心算法 SM-2
+
+2.1 三个核心参数
+
+每张卡片都维护这三个值：
+
+参数  含义  初始值  变化范围
+
+`repetitions`  连续成功复习次数  0  0, 1, 2, 3, ...
+`interval`  当前复习间隔（天）  1  1, 6, 16, 44, ...
+`easeFactor`  难度系数  2.5  1.3 ~ 3.0
+
+2.2 SM-2 标准公式（按时复习的情况下）
+
+当用户在计划的日期或之前标记「已掌握」时：
+
+
+
+示例路径（假设 easeFactor 始终为 2.5）：
+
+
+这意味着，一张卡片经过 5次成功复习 后，它的复习间隔已经接近100天——我们认为它已进入长期记忆。
+
+2.3 失败时的处理（标记「待掌握」）
+
+当用户标记「待掌握」，无论之前复习了多少次：
+
+
+
+---
+
+3. 延迟复习惩罚机制
+
+3.1 为什么需要惩罚？
+
+如果用户计划10天后复习某卡片，但他30天后才打开App，这张卡片已经被遗忘了。如果还按原有的公式延长间隔，会导致学习效果下降。
+
+因此，我们设计了4级延迟惩罚系统。
+
+3.2 延迟等级判定
+
+
+
+3.3 惩罚规则表（标记「已掌握」时）
+
+延迟等级  延迟条件  对 reps 的影响  对 interval 的影响  对 easeFactor 的影响
+
+按时 onTime  delayDays ≤ 0  reps + 1  interval × easeFactor（正常）  easeFactor + 0.1
+轻微 slight  0 < delayDays ≤ 3  reps + 1  min(计算值, prev + 3)  不增加
+中等 medium  3 < delayDays ≤ interval  reps 退 1，最小1  ceil(prev × 0.6)  easeFactor - 0.1
+严重 severe  delayDays > interval  reps = 1，从新开始  interval = 1 天  easeFactor - 0.15
+
+示例： 卡片已成功复习3次（reps=3, interval=15天, easeFactor=2.7），nextReviewAt 是2026-06-10。
+
+今天日期  delayDays  等级  标记已掌握后的结果
+
+2026-06-08  -2  onTime  reps=4, interval=41, easeFactor=2.8
+2026-06-12  +2  slight  reps=4, interval=min(41,18)=18
+2026-06-18  +8  medium  reps=2, interval=ceil(15×0.6)=9, easeFactor=2.6
+2026-07-01  +21  severe  reps=1, interval=1, easeFactor=2.55
+
+3.4 失败时的统一处理（不考虑延迟）
+
+无论延迟程度如何，标记「待掌握」后的处理都是一样的：
+
+
+---
+
+4. 数据存储结构
+
+4.1 主要数据表
+
+表1: cardStatus（卡片学习状态）
+
+位置: `IndexedDB -> db('AIFlashcardsDB_v2').cardStatus`
+
+字段  类型  含义  艾宾浩斯用途
+
+`id`  string  记录ID
+`cardId`  string  卡片ID  关联卡片
+`categoryId`  string  分类ID  关联分类
+`status`  string  mastered/review  手动状态标记
+`repetitions`  number  连续成功次数  核心参数
+`interval`  number  当前复习间隔（天）  核心参数
+`easeFactor`  number  难度系数（1.3-3.0）  核心参数
+`nextReviewAt`  number  下次复习时间戳（ms）  决定是否到期
+`lastReviewedAt`  number  上次复习时间戳  统计用
+`reviewCount`  number  总复习次数  统计用
+`mode`  string  操作来源模式  用于模式隔离
+`updatedAt`  number  最后更新时间
+
+表2: reviewHistory（复习历史记录）
+
+位置: `IndexedDB -> db('AIFlashcardsDB_v2').reviewHistory`
+
+字段  类型  含义
+
+`id`  string  记录ID
+`cardId`  string  卡片ID
+`categoryId`  string  分类ID
+`wasMastered`  boolean  true=已掌握, false=待掌握
+`reviewedAt`  number  复习时间戳
+`mode`  string  ebbinghaus/sequential/active/weak/test
+
+用途:
+- 计算连续学习天数（streak）
+- 历史分析（某卡片在测试中答错了多少次）
+- 用户查看单张卡片的复习轨迹
+- 云端同步时作为完整历史备份
+
+表3: studyPlans（学习计划配置）
+
+位置: `IndexedDB -> db('AIFlashCardsDB_v2').studyPlans`
+
+字段  类型  含义  默认值
+
+`id`  string  记录ID
+`categoryId`  string  分类ID
+`chapterId`  string  章节ID（v8新增，支持按章节设置独立计划）  空字符串=分类级计划
+`dailyReviewLimit`  number  每日复习上限  50 张
+`dailyNewLimit`  number  每日新学上限  20 张
+`priority`  string  low/medium/high  medium
+`createdAt`  number  创建时间
+`updatedAt`  number  更新时间
+
+用途:
+- 未来7天预测中，超过 dailyReviewLimit 的日期会标红警告
+- 用户可针对不同分类/章节设置不同的学习节奏
+- 按 categoryId + chapterId 组合唯一确定一条计划记录
+
+4.2 数据库版本演变
+
+v6→v7：新增 chapters 表，为 cards/units/cardStatus/wrongAnswers/testQuestions/testRecords 添加 chapterId 字段
+v7→v8：studyPlans 表新增 chapterId 字段，支持按章节设置独立学习计划；reviewHistory 表新增 chapterId 字段
+v8 修复（2026-06-17）：sync.js TABLE_SCHEMAS 中 study_plans 和 review_history 补全 chapter_id 字段；SQL 中 study_plans 和 review_history 表补全 chapter_id 列及索引
+
+版本v6升级（所有用户自动触发）:
+- 旧数据会自动迁移到新表结构
+- 已有 status 的卡片，如果没有 repetitions/interval/easeFactor，按默认值初始化
+- 新卡片第一次复习时才创建 cardStatus 记录
+
+---
+
+5. 前端界面流程
+
+5.1 入口1：背诵页按钮 → 计划页
+
+路径: `/memorize` → `/memorize/plan`
+
+
+
+5.2 入口2：从计划页跳回背诵页
+
+路径: `/memorize/plan` → `/memorize?categoryId=xxx&mode=ebbinghaus&fromPlan=true`
+
+
+
+5.3 三个主视图详解
+
+5.3.1 今日计划视图 (Today View)
+
+
+
+5.3.2 未来预测视图 (Future View)
+
+
+
+预测算法 (函数 `predictFutureDueCards`):
+
+
+
+5.3.3 学习分析视图 (Analysis View)
+
+
+
+5.4 章节级学习计划设置（v8 新增）
+
+入口：
+- 今日计划视图：分类卡片右上角 ⚙️ 按钮 → 打开分类级计划设置
+- 未来预测/学习分析视图：选择章节后，章节下拉框右侧 ⚙️ 按钮 → 打开章节级计划设置
+
+功能：
+- 分类级计划：设置整个分类的每日复习上限、每日新学上限、优先级
+- 章节级计划：为每个章节独立设置每日复习上限、每日新学上限、优先级
+- 章节级计划优先生效：当选中章节查看未来预测时，使用章节级计划的上限值进行超限警告
+- 数据按 categoryId + chapterId 组合唯一存储，分类级计划 chapterId 为空字符串
+
+
+
+---
+
+6. 背诵模式隔离系统
+
+6.1 五种背诵模式
+
+模式  mode 值  是否修改 SM-2 参数  是否同步云端  说明
+
+艾宾浩斯  ebbinghaus  ✅ 是  ✅ 是  基于SM-2算法的间隔重复复习
+顺序浏览  sequential  ❌ 否，仅更新 status  ❌ 否  按卡片顺序浏览
+活跃学习  active  ❌ 否，仅更新 status  ❌ 否  打乱顺序快速复习
+薄弱卡片  weak  ⚠️ 缩短 interval，reps不变  ❌ 否  专注待掌握卡片复习
+测试评分  test  ❌ 否，仅更新 status  ✅ 是（history同步）  单元/分类检测后评分
+
+6.2 为什么要隔离？
+
+问题: 如果用户在顺序模式下标记了100张卡片为「已掌握」，这些卡片的SM-2参数会被错误地修改——但用户并没有真正按间隔复习。
+
+解决方案: 在 `setCardStatus` 函数中，根据传入的 `mode` 参数执行不同的更新策略：
+
+
+
+6.3 薄弱模式的特殊设计
+
+薄弱模式的目标是强化复习，所以当用户在薄弱模式下标记「已掌握」时：
+- interval 缩短到原有的 80% → 卡片会更早再次出现
+- easeFactor 微增 0.05 → 对用户的掌握给予有限的正面反馈
+- reps 保持不变 → 不会因为"在薄弱模式下复习了"就让卡片跳过几个阶段
+
+这是一种「稳健保守」的策略：让薄弱卡片保持在可被复习的范围内，直到用户在艾宾浩斯的正常节奏中证明了自己的掌握程度。
+
+---
+
+7. 未来预测系统
+
+7.1 预测未来N天到期卡片数
+
+函数: `predictFutureDueCards(cards, statusesByCard, daysAhead=7, now)`
+
+算法:
+
+
+7.2 预测单卡片未来复习路径
+
+函数: `predictFutureReviewSchedule(record, numFutureReviews=5, now)`
+
+模拟一张卡片从当前状态开始，N次全部成功复习后的时间线：
+
+
+
+注意: easeFactor 的上限是 3.0，超过后不再增加。这个上限避免了 interval 无限增长导致卡片最终"永不出现"。
+
+7.3 估算达成长期记忆需要多少天
+
+函数: `estimateDaysToLongTerm(record, now)`
+
+当前状态  估算天数  说明
+
+新卡片（无记录）  ~67 天  1 + 6 + 16 + 44 = 67
+reps=1  ~66 天  6 + 16 + 44 = 66
+reps=2  ~60 天  16 + 44 = 60
+reps=3  ~44 天  还需2次
+reps=4  ~120 天  还需1次
+reps=5  0 天  已达成长期记忆
+
+---
+
+8. 记忆阶段划分
+
+8.1 六个阶段定义
+
+
+
+8.2 记忆阶段的颜色和图标
+
+阶段  reps  nextReviewAt 条件  颜色  说明
+
+到期复习 due  任意值  <= now  🔴 #FF6B6B  需要立即复习
+短期记忆 short  1 ~ 2  > now  🟠 #FFA94D  刚学习不久
+中期记忆 medium  3 ~ 4  > now  🟡 #FFD93D  已掌握基础
+长期记忆 long  >= 5  > now  🟢 #6BCB77  已形成长期记忆
+未学习 unstarted  无记录  ——  ⚪ #C0C0C0  从未复习过
+失败回退 regressed  0  ——  🟥 #FF4757  上次失败，需重新开始
+
+8.3 阶段分布计算
+
+函数: `computeCategoryStageDistribution(cards, statuses, now)`
+
+用于在分析视图中绘制环形图。
+
+函数: `computeCategoryProgress(cards, statuses, now)`
+
+计算"已掌握百分比"——中期记忆+长期记忆视为已掌握。
+
+---
+
+9. 测试评分与艾宾浩斯的联动
+
+9.1 测试的定位
+
+测试 ≠ 复习
+
+- 复习 = 用户主动背诵，触发 SM-2 算法
+- 测试 = 对当前掌握程度的抽样评估，不直接修改长期计划
+
+9.2 测试评分对卡片状态的影响
+
+当用户在单元检测/分类检测中答错一张卡片时：
+
+
+
+9.3 测试后用户看到什么
+
+
+
+9.4 测试历史的分析用途
+
+reviewHistory 中的 mode='test' 记录可以用来：
+
+- 统计某卡片在测试中被答错多少次（≥2 次时，UI显示警告信息）
+- 识别用户的知识薄弱点
+- 建议提前复习某些"在测试中反复出错"的卡片
+
+
+
+---
+
+10. 云端同步策略
+
+10.1 分层同步原则
+
+数据  本地存储  云端同步  原因
+
+cardStatus (mode='ebbinghaus')  ✅  ✅  艾宾浩斯是长期计划，必须跨设备可继续
+cardStatus (其他 mode)  ✅  ❌  临时浏览模式，状态不跨设备
+reviewHistory (全模式)  ✅  ✅  连续学习天数分析需要完整历史
+studyPlans  ✅  ✅  用户的设置需要跨设备一致
+categories/cards  ✅  ✅  基础数据需要同步
+
+10.2 换设备场景
+
+
+
+10.3 同步状态指示器
+
+
+
+10.4 仅本地数据警告条
+
+当用户的 reviewHistory 中存在非 ebbinghaus 模式的数据时，在页面底部显示：
+
+
+
+10.5 同步函数
+
+
+
+---
+
+11. 关键代码文件索引
+
+文件路径  主要功能  关键函数/组件
+
+`src/utils/ebbinghaus.js`  SM-2算法核心实现  `applySM2WithDelay()`, `calculateDelayDays()`, `classifyDelayLevel()`, `predictFutureReviewSchedule()`, `estimateDaysToLongTerm()`
+`src/utils/planCalculator.js`  计划页计算工具（纯函数）  `getMemoryStage()`, `computeCategoryStageDistribution()`, `predictFutureDueCards()`, `computeCategoryProgress()`, `getStageName()`, `getStageColor()`
+`src/pages/StudyPlan.jsx`  计划页主组件  `SyncIndicator` 组件, `MAIN_TABS` 配置, 数据加载逻辑
+`src/pages/PlanTodayView.jsx`  今日计划视图  分类卡片列表, 模式汇总卡片, 进度条
+`src/pages/PlanFutureView.jsx`  未来预测视图  柱状图实现, 超上限警告
+`src/pages/PlanAnalysisView.jsx`  学习分析视图  环形图实现, 阶段分布图例, 分类进度表
+`src/pages/StudyPlan.css`  计划页样式  进度条, 环形图, Tab样式, 响应式布局
+`src/pages/PlanSettingsModal.jsx`  学习计划设置弹窗  分类级/章节级计划设置，upsertStudyPlan 调用
+`src/pages/Memorize.jsx`  背诵页主组件  `handleMark()`, `setCardStatus` 调用, fromPlan 参数处理
+`src/services/db.js`  IndexedDB 数据库层  `setCardStatus()` (核心：模式隔离逻辑), `addReviewHistory()`, `getAllCardStatuses()`, `upsertStudyPlan()`, `getStudyPlanByCategory()`, v6-v8 版本升级
+`src/services/sync.js`  云端同步层  `pushToCloud()`, `pullFromCloud()`, `synchronize()`, `getSyncStatus()`, 分层上传逻辑
+`src/services/testGradingService.js`  测试评分服务  `updateMasteryAndWrongAnswers()` 中传入 `mode: 'test'`
+`src/pages/StatsLongTerm.jsx`  长期记忆卡片页  显示reps>=5的卡片详情
+`src/App.jsx`  路由配置  `/memorize/plan` 路由, `/stats/longterm` 路由
+数据库版本  v6 升级  新增 reviewHistory、studyPlans 表, cardStatus.mode 字段
+
+---
+
+附录 A：参数常量
+
+常量  值  含义  定义位置
+
+DAY_MS  86400000  一天的毫秒数  ebbinghaus.js
+initial easeFactor  2.5  初始难度系数  ebbinghaus.js applySM2WithDelay
+min easeFactor  1.3  难度系数下限  ebbinghaus.js
+max easeFactor  3.0  难度系数上限（预测时使用）  planCalculator.js
+dailyReviewLimit (default)  50  默认每日复习上限  studyPlans DEFAULT_STUDY_PLAN
+dailyNewLimit (default)  20  默认每日新学上限  studyPlans DEFAULT_STUDY_PLAN
+longTerm threshold  5  reps>=5视为长期记忆  planCalculator.js getMemoryStage
+test warning threshold  2  测试答错≥2次显示警告  UI逻辑
+
+---
+
+附录 B：卡片生命周期示例
+
+一张卡片从首次学习到长期记忆的完整旅程：
+
+
+
+报告结束

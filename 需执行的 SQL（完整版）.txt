@@ -1,0 +1,429 @@
+-- ============================================================
+-- CloudBase PostgreSQL 完整建表脚本
+-- 项目：AI 背诵卡片
+-- 环境 ID：eggli-d3gpsvtlnb1656c91
+-- 说明：与云端实际表结构完全一致，id 使用 uuid，时间戳用 timestamptz
+-- 包含所有表：knowledge_tree, cards, card_status, bookmarks, wrong_answers,
+--             user_profiles, user_settings, test_questions, test_records,
+--             test_sessions, review_history, study_plans, drafts, link_generation_runs
+-- 注意：categories, topics, chapters, units 已合并到 knowledge_tree 表
+-- ============================================================
+
+-- ============================================================
+-- 第一步：删除所有表（按依赖关系倒序）
+-- ============================================================
+SET session_replication_role = replica;
+DROP TABLE IF EXISTS knowledge_tree CASCADE;
+DROP TABLE IF EXISTS cards CASCADE;
+DROP TABLE IF EXISTS card_status CASCADE;
+DROP TABLE IF EXISTS bookmarks CASCADE;
+DROP TABLE IF EXISTS wrong_answers CASCADE;
+DROP TABLE IF EXISTS test_questions CASCADE;
+DROP TABLE IF EXISTS test_records CASCADE;
+DROP TABLE IF EXISTS test_sessions CASCADE;
+DROP TABLE IF EXISTS review_history CASCADE;
+DROP TABLE IF EXISTS study_plans CASCADE;
+DROP TABLE IF EXISTS drafts CASCADE;
+DROP TABLE IF EXISTS link_generation_runs CASCADE;
+DROP TABLE IF EXISTS user_profiles CASCADE;
+DROP TABLE IF EXISTS user_settings CASCADE;
+SET session_replication_role = DEFAULT;
+
+-- ============================================================
+-- 第二步：创建所有表
+-- ============================================================
+
+-- 1. 知识树表（统一存储分类、主题、章节、单元、知识点）
+CREATE TABLE IF NOT EXISTS knowledge_tree (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  parent_id UUID,
+  level TEXT NOT NULL,
+  category_id UUID NOT NULL,
+  topic_id UUID,
+  chapter_id UUID,
+  unit_id UUID,
+  knowledge_point_id UUID,
+  user_id TEXT NOT NULL,
+  name TEXT,
+  sort_order INTEGER DEFAULT 0,
+  purpose TEXT,
+  description TEXT,
+  color TEXT DEFAULT '#3b82f6',
+  icon TEXT DEFAULT '📚',
+  content TEXT,
+  is_processed BOOLEAN DEFAULT FALSE,
+  card_count INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. 卡片表
+CREATE TABLE IF NOT EXISTS cards (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category_id UUID NOT NULL,
+  chapter_id UUID,
+  unit_id UUID,
+  topic_id UUID,
+  user_id TEXT NOT NULL,
+  front TEXT NOT NULL,
+  back TEXT NOT NULL,
+  hint TEXT,
+  explanation TEXT,
+  status TEXT DEFAULT 'new',
+  ease_factor NUMERIC DEFAULT 2.5,
+  interval INTEGER DEFAULT 0,
+  repetitions INTEGER DEFAULT 0,
+  due_date TIMESTAMPTZ,
+  last_reviewed_at TIMESTAMPTZ,
+  is_mastered BOOLEAN DEFAULT FALSE,
+  difficulty INTEGER DEFAULT 2,
+  is_ai_generated BOOLEAN DEFAULT TRUE,
+  source_type TEXT DEFAULT 'manual',
+  tags TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. 卡片状态表
+CREATE TABLE IF NOT EXISTS card_status (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  card_id UUID NOT NULL,
+  category_id UUID NOT NULL,
+  user_id TEXT NOT NULL,
+  status TEXT DEFAULT 'new',
+  ease_factor NUMERIC DEFAULT 2.5,
+  interval INTEGER DEFAULT 0,
+  repetitions INTEGER DEFAULT 0,
+  lapses INTEGER DEFAULT 0,
+  last_reviewed_at TIMESTAMPTZ,
+  next_review_at TIMESTAMPTZ,
+  is_mastered BOOLEAN DEFAULT FALSE,
+  review_count INTEGER DEFAULT 0,
+  correct_count INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 4. 书签表
+CREATE TABLE IF NOT EXISTS bookmarks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  card_id UUID NOT NULL,
+  category_id UUID NOT NULL,
+  user_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5. 错题表
+CREATE TABLE IF NOT EXISTS wrong_answers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  card_id UUID NOT NULL,
+  category_id UUID NOT NULL,
+  chapter_id UUID,
+  unit_id UUID,
+  unit_name TEXT,
+  category_name TEXT,
+  stem TEXT,
+  user_id TEXT NOT NULL,
+  count INTEGER DEFAULT 1,
+  question_type TEXT,
+  question_id UUID,
+  last_wrong_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 6. 用户信息表
+CREATE TABLE IF NOT EXISTS user_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL,
+  nickname TEXT,
+  avatar_url TEXT,
+  avatar_type TEXT,
+  tags TEXT[],
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 7. 用户设置表
+CREATE TABLE IF NOT EXISTS user_settings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL,
+  settings TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (user_id)
+);
+
+-- 8. 测试题库表
+CREATE TABLE IF NOT EXISTS test_questions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category_id UUID NOT NULL,
+  unit_id UUID,
+  chapter_id UUID,
+  card_id UUID,
+  type TEXT,
+  question TEXT,
+  stem TEXT,
+  options TEXT,
+  answer TEXT,
+  explanation TEXT,
+  analysis TEXT,
+  difficulty INTEGER DEFAULT 2,
+  knowledge_point TEXT,
+  test_type TEXT,
+  target_id UUID,
+  card_updated_at TIMESTAMPTZ,
+  user_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  pending_review BOOLEAN DEFAULT FALSE,
+  reviewed_at TIMESTAMPTZ
+);
+
+-- 9. 测试记录表
+CREATE TABLE IF NOT EXISTS test_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  question_id UUID,
+  category_id UUID,
+  unit_id UUID,
+  chapter_id UUID,
+  category_name TEXT,
+  unit_name TEXT,
+  user_answer TEXT,
+  is_correct BOOLEAN,
+  test_type TEXT,
+  test_session_id UUID,
+  total_score INTEGER,
+  correct_count INTEGER,
+  total_count INTEGER,
+  time_used INTEGER,
+  questions TEXT,
+  answers TEXT,
+  grading_results TEXT,
+  user_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 10. 测试会话表
+CREATE TABLE IF NOT EXISTS test_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  test_type TEXT,
+  type_id UUID,
+  unit_id UUID,
+  category_id UUID,
+  chapter_id UUID,
+  category_name TEXT,
+  unit_name TEXT,
+  questions TEXT,
+  user_answers TEXT,
+  marked_questions TEXT,
+  current_index INTEGER DEFAULT 0,
+  elapsed INTEGER DEFAULT 0,
+  instant_feedback BOOLEAN DEFAULT FALSE,
+  feedback_map TEXT,
+  answers TEXT,
+  start_time TIMESTAMPTZ,
+  last_saved_at TIMESTAMPTZ,
+  is_completed BOOLEAN DEFAULT FALSE,
+  user_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 11. 复习历史表
+CREATE TABLE IF NOT EXISTS review_history (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  card_id UUID NOT NULL,
+  category_id UUID NOT NULL,
+  chapter_id UUID,
+  user_id TEXT NOT NULL,
+  was_mastered BOOLEAN DEFAULT FALSE,
+  reviewed_at TIMESTAMPTZ,
+  mode TEXT DEFAULT 'ebbinghaus',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 12. 学习计划表
+CREATE TABLE IF NOT EXISTS study_plans (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category_id UUID NOT NULL,
+  chapter_id UUID,
+  user_id TEXT NOT NULL,
+  daily_review_limit INTEGER DEFAULT 20,
+  daily_new_limit INTEGER DEFAULT 10,
+  priority INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 13. 草稿表
+CREATE TABLE IF NOT EXISTS drafts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL,
+  content TEXT,
+  category_id UUID,
+  chapter_id UUID,
+  unit_id UUID,
+  source TEXT DEFAULT 'float',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 14. 联结题库记录表
+CREATE TABLE IF NOT EXISTS link_generation_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id TEXT NOT NULL,
+  category_id UUID NOT NULL,
+  source_chapter_id UUID,
+  target_chapter_id UUID,
+  status TEXT DEFAULT 'pending',
+  result TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================
+-- 第三步：创建索引
+-- ============================================================
+
+-- knowledge_tree
+CREATE INDEX IF NOT EXISTS idx_knowledge_tree_parent_id ON knowledge_tree(parent_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tree_level ON knowledge_tree(level);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tree_category_id ON knowledge_tree(category_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tree_topic_id ON knowledge_tree(topic_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tree_chapter_id ON knowledge_tree(chapter_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tree_unit_id ON knowledge_tree(unit_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_tree_user_id ON knowledge_tree(user_id);
+
+-- cards
+CREATE INDEX IF NOT EXISTS idx_cards_category_id ON cards(category_id);
+CREATE INDEX IF NOT EXISTS idx_cards_chapter_id ON cards(chapter_id);
+CREATE INDEX IF NOT EXISTS idx_cards_unit_id ON cards(unit_id);
+CREATE INDEX IF NOT EXISTS idx_cards_topic_id ON cards(topic_id);
+CREATE INDEX IF NOT EXISTS idx_cards_user_id ON cards(user_id);
+CREATE INDEX IF NOT EXISTS idx_cards_due_date ON cards(due_date);
+
+-- card_status
+CREATE INDEX IF NOT EXISTS idx_card_status_card_id ON card_status(card_id);
+CREATE INDEX IF NOT EXISTS idx_card_status_category_id ON card_status(category_id);
+CREATE INDEX IF NOT EXISTS idx_card_status_user_id ON card_status(user_id);
+CREATE INDEX IF NOT EXISTS idx_card_status_next_review_at ON card_status(next_review_at);
+
+-- bookmarks
+CREATE INDEX IF NOT EXISTS idx_bookmarks_card_id ON bookmarks(card_id);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_category_id ON bookmarks(category_id);
+CREATE INDEX IF NOT EXISTS idx_bookmarks_user_id ON bookmarks(user_id);
+
+-- wrong_answers
+CREATE INDEX IF NOT EXISTS idx_wrong_answers_card_id ON wrong_answers(card_id);
+CREATE INDEX IF NOT EXISTS idx_wrong_answers_category_id ON wrong_answers(category_id);
+CREATE INDEX IF NOT EXISTS idx_wrong_answers_user_id ON wrong_answers(user_id);
+
+-- user_profiles
+CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id);
+
+-- user_settings
+CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings(user_id);
+
+-- test_questions
+CREATE INDEX IF NOT EXISTS idx_test_questions_category_id ON test_questions(category_id);
+CREATE INDEX IF NOT EXISTS idx_test_questions_card_id ON test_questions(card_id);
+CREATE INDEX IF NOT EXISTS idx_test_questions_user_id ON test_questions(user_id);
+
+-- test_records
+CREATE INDEX IF NOT EXISTS idx_test_records_question_id ON test_records(question_id);
+CREATE INDEX IF NOT EXISTS idx_test_records_category_id ON test_records(category_id);
+CREATE INDEX IF NOT EXISTS idx_test_records_test_session_id ON test_records(test_session_id);
+CREATE INDEX IF NOT EXISTS idx_test_records_user_id ON test_records(user_id);
+
+-- test_sessions
+CREATE INDEX IF NOT EXISTS idx_test_sessions_type_id ON test_sessions(type_id);
+CREATE INDEX IF NOT EXISTS idx_test_sessions_category_id ON test_sessions(category_id);
+CREATE INDEX IF NOT EXISTS idx_test_sessions_user_id ON test_sessions(user_id);
+
+-- review_history
+CREATE INDEX IF NOT EXISTS idx_review_history_card_id ON review_history(card_id);
+CREATE INDEX IF NOT EXISTS idx_review_history_category_id ON review_history(category_id);
+CREATE INDEX IF NOT EXISTS idx_review_history_user_id ON review_history(user_id);
+
+-- study_plans
+CREATE INDEX IF NOT EXISTS idx_study_plans_category_id ON study_plans(category_id);
+CREATE INDEX IF NOT EXISTS idx_study_plans_user_id ON study_plans(user_id);
+
+-- drafts
+CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
+CREATE INDEX IF NOT EXISTS idx_drafts_category_id ON drafts(category_id);
+
+-- link_generation_runs
+CREATE INDEX IF NOT EXISTS idx_link_generation_runs_category_id ON link_generation_runs(category_id);
+CREATE INDEX IF NOT EXISTS idx_link_generation_runs_user_id ON link_generation_runs(user_id);
+
+-- ============================================================
+-- 第四步：启用 RLS（行级安全）
+-- ============================================================
+
+ALTER TABLE knowledge_tree ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cards ENABLE ROW LEVEL SECURITY;
+ALTER TABLE card_status ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bookmarks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE wrong_answers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE test_questions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE test_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE test_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE review_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE study_plans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE drafts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE link_generation_runs ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================
+-- 第五步：创建 RLS 策略（允许所有用户访问自己的数据）
+-- ============================================================
+
+-- knowledge_tree
+CREATE POLICY "knowledge_tree_user_access" ON knowledge_tree USING (true) WITH CHECK (true);
+
+-- cards
+CREATE POLICY "cards_user_access" ON cards USING (true) WITH CHECK (true);
+
+-- card_status
+CREATE POLICY "card_status_user_access" ON card_status USING (true) WITH CHECK (true);
+
+-- bookmarks
+CREATE POLICY "bookmarks_user_access" ON bookmarks USING (true) WITH CHECK (true);
+
+-- wrong_answers
+CREATE POLICY "wrong_answers_user_access" ON wrong_answers USING (true) WITH CHECK (true);
+
+-- user_profiles
+CREATE POLICY "user_profiles_user_access" ON user_profiles USING (true) WITH CHECK (true);
+
+-- user_settings
+CREATE POLICY "user_settings_user_access" ON user_settings USING (true) WITH CHECK (true);
+
+-- test_questions
+CREATE POLICY "test_questions_user_access" ON test_questions USING (true) WITH CHECK (true);
+
+-- test_records
+CREATE POLICY "test_records_user_access" ON test_records USING (true) WITH CHECK (true);
+
+-- test_sessions
+CREATE POLICY "test_sessions_user_access" ON test_sessions USING (true) WITH CHECK (true);
+
+-- review_history
+CREATE POLICY "review_history_user_access" ON review_history USING (true) WITH CHECK (true);
+
+-- study_plans
+CREATE POLICY "study_plans_user_access" ON study_plans USING (true) WITH CHECK (true);
+
+-- drafts
+CREATE POLICY "drafts_user_access" ON drafts USING (true) WITH CHECK (true);
+
+-- link_generation_runs
+CREATE POLICY "link_generation_runs_user_access" ON link_generation_runs USING (true) WITH CHECK (true);
+
+-- ============================================================
+-- 验证：查看所有表
+-- ============================================================
+SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename;

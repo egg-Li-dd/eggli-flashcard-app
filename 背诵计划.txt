@@ -1,0 +1,190 @@
+================================================================================
+                    背诵计划 - 艾宾浩斯与进度恢复机制
+                          创建日期: 2026-06-19
+================================================================================
+
+本文件记录背诵计划相关的核心机制，包括艾宾浩斯进度恢复、SM-2 参数隔离策略、
+多设备 SM-2 冲突解决，以及废弃的轮数管理概念。
+
+一、艾宾浩斯模式进度恢复机制（lastReviewedCardId）───────────────────────────────────────────────────────────────────
+触发入口：
+  - src/pages/Memorize.jsx - loadCards(categoryId) 中 studyMode === 'ebbinghaus' 分支
+  - src/pages/Memorize.jsx - handleMark(status) 成功后保存 lastReviewedCardId
+  - src/pages/Memorize.jsx - handleSelectMode(mode) 中 active 模式 shuffle 后恢复
+
+核心机制：
+  - 存储 key：
+      · ebbinghaus 模式：`memorize_ebbinghaus_last_card_${categoryId}`
+      · active 模式：`memorize_active_last_card_${categoryId}`
+  - 写入时机：handleMark 成功后，若 `effectiveMode === 'ebbinghaus' || effectiveMode === 'active'`，
+    执行 `localStorage.setItem(key, currentCard.id)`
+  - 恢复时机：
+      · ebbinghaus 模式 loadCards：读取 lastReviewedCardId，在 dueCards 中定位，
+        `setCurrentIndex(Math.min(idx + 1, dueCards.length - 1))`（定位到下一张已复习过的卡片）
+      · active 模式 handleSelectMode shuffle 后：读取 lastReviewedCardId，在 shuffled 数组中定位，
+        `setCurrentIndex(Math.min(idx + 1, shuffled.length - 1))`
+  - 未找到 lastReviewedCardId 时：`setCurrentIndex(0)` 从头开始
+
+设计目的：
+  - 替代废弃的"轮数管理"概念，提供更细粒度的进度恢复
+  - 用户切换分类或重新进入背诵页时，自动定位到上次复习的下一张卡片
+  - 避免重复复习已掌握的卡片，提升学习效率
+
+二、SM-2 参数隔离策略（短期计划不修改 SM-2 参数）───────────────────────────────────────────────────────────────────
+触发入口：
+  - src/services/db.js - setCardStatus(cardId, categoryId, status, { mode })
+  - src/pages/Memorize.jsx - handleMark(status) 中 predictedRecord 计算
+
+核心原则：
+  短期计划（sequential/active）与长期计划（ebbinghaus）数据隔离，避免互相污染。
+
+db.js setCardStatus 行为：
+  - ebbinghaus 模式：完整 SM-2 计算（repetitions/interval/easeFactor/nextReviewAt），保留原 userOverride 值
+  - sequential/active 模式 review：仅更新 status/updatedAt/reviewCount/mode/userOverride=true，不修改 SM-2 参数
+  - sequential/active 模式 mastered：仅更新 status，清除 userOverride
+  - sequential/active 模式 learning：仅更新 status，设置 userOverride=true
+  - weak 模式：保持既有 interval 缩短 / easeFactor 微增逻辑
+  - test 模式：只改 status/reviewCount；userOverride=true 时保护不被 mastered 覆盖
+
+Memorize.jsx predictedRecord 同步：
+  - ebbinghaus 模式：完整预测 SM-2 参数变化（repetitions/interval/easeFactor/nextReviewAt）
+  - sequential/active 模式 review：不再预测 SM-2 参数变化，仅设置 userOverride=true
+  - sequential/active 模式 mastered/learning：仅设置 userOverride
+
+设计目的：
+  - 短期计划标记 review 不再污染长期计划的 SM-2 参数
+  - 避免艾宾浩斯复习节奏被打乱
+  - userOverride 字段标记用户手动判断，test 模式答对时不覆盖
+
+三、多设备 SM-2 冲突解决（基于 updatedAt）───────────────────────────────────────────────────────────────────
+触发入口：
+  - src/services/sync.js - pullFromCloud(db) 中 cardStatus 合并逻辑
+
+核心机制：
+  - 旧实现：`db.cardStatus.clear()` 后 bulkAdd 云端数据，导致本地非 ebbinghaus 记录丢失
+  - 新实现：保留本地非 ebbinghaus 模式记录，基于 updatedAt 合并 ebbinghaus 记录
+  - 冲突解决：同名 cardId 按 updatedAt 取较新者
+      · cloudUpdated > localUpdated → 更新本地记录
+      · cloudUpdated <= localUpdated → 跳过（保留本地较新记录）
+  - 日志输出：`[sync] cardStatus 合并完成: 更新 N 条, 新增 N 条, 跳过 N 条（本地较新）`
+
+数据流：
+  - 云端 card_status 表仅存储 ebbinghaus 模式记录（长期计划权威）
+  - 本地 cardStatus 表包含所有模式记录（sequential/active/weak/ebbinghaus/test）
+  - Pull 同步时：本地非 ebbinghaus 记录保留不变；同名 cardId 按 updatedAt 取较新者
+
+设计目的：
+  - 多设备登录时，每台设备的艾宾浩斯复习进度正确同步
+  - 本地短期计划记录不被云端覆盖
+  - 基于 updatedAt 解决冲突，保留较新记录
+
+四、废弃轮数管理概念 ───────────────────────────────────────────────────────────────────
+背景：
+  旧版背诵功能依赖"轮数管理"概念：
+  - 分类的"已完成轮数"由 getCategoryRound / incrementCategoryRound / decrementCategoryRound / setCategoryRound 管理
+  - 当一个分类下所有卡片都被标记为 mastered → 视为"本轮完成" → handleComplete() → 轮数 +1
+  - 所有已掌握卡片被重置为 review → 自动开启新一轮
+  - round_count 字段通过 sync.js 同步到云端
+
+废弃原因：
+  - 轮数管理与 SM-2 长期计划冲突：重置 mastered 为 review 会打乱艾宾浩斯复习节奏
+  - 轮数概念复杂，与 lastReviewedCardId 进度恢复机制重复
+  - 多设备同步时 round_count 字段冲突难以解决
+
+移除内容：
+  - db.js 移除函数：
+      · incrementCategoryRound
+      · decrementCategoryRound
+      · getCategoryRound
+      · setCategoryRound
+      · getCategoryRoundsFromLocal
+  - sync.js 移除字段：
+      · round_count 字段的 push/pull 逻辑
+
+替代方案：
+  - 进度恢复：lastReviewedCardId（localStorage 保存，按分类+模式隔离）
+  - 剩余卡片计算：dueCardsCount（useMemo 动态计算，基于 filteredCards 和 fullCardStatuses）
+  - 完成判定：filteredCards 长度为 0 时调用 handleComplete() 显示完成弹窗
+
+五、完成弹窗逻辑 ───────────────────────────────────────────────────────────────────
+触发入口：
+  - src/pages/Memorize.jsx - handleComplete()（filteredCards 长度为 0 时调用）
+  - src/pages/Memorize.jsx - 顶部"完成"按钮 onClick={handleComplete}
+
+弹窗内容（基于 studyMode 分支）：
+  - ebbinghaus 模式：
+      · 标题："今日复习已完成"
+      · 副标题："今日到期卡片已全部复习完成，共 N 张卡片"
+      · 按钮：[查看计划页]（btn-primary，navigate('/memorize/plan')）+ [继续浏览]（btn-secondary）
+  - 非 ebbinghaus 模式：
+      · 标题："恭喜完成"
+      · 副标题："已完成 N 张卡片的学习"
+      · 按钮：[重新开始]（btn-primary，setCurrentIndex(0)）+ [返回]（btn-secondary，navigate(-1)）
+
+关闭动画：
+  - closingComplete state，200ms 动画后清空 showCompleteModal
+  - 防抖：closingComplete 为 true 时点击直接 return
+
+六、dueCardsCount 动态计算 ───────────────────────────────────────────────────────────────────
+触发入口：
+  - src/pages/Memorize.jsx - useMemo 计算 dueCardsCount
+
+核心机制：
+  - 旧实现：state 一次性计算，状态不同步
+  - 新实现（useMemo）：
+      ```
+      const dueCardsCount = useMemo(() => {
+        if (studyMode !== 'ebbinghaus' && !reviewOnly) return 0
+        return filterDueCards(filteredCards, fullCardStatuses).length
+      }, [filteredCards, fullCardStatuses, studyMode, reviewOnly])
+      ```
+  - 依赖项：filteredCards / fullCardStatuses / studyMode / reviewOnly
+  - 仅 ebbinghaus 模式或 reviewOnly 时有意义，其他模式返回 0
+
+UI 使用位置：
+  - 顶部进度提示："还有 N 张稍后到期"
+  - "有 N 张到期卡片"按钮（仅 ebbinghaus/非 weak/非 reviewOnly 模式显示）
+
+七、涉及文件 ───────────────────────────────────────────────────────────────────
+| 文件 | 变化 |
+|------|------|
+| `src/services/db.js` | setCardStatus 重构：SM-2 隔离、userOverride 保护、返回记录对象；移除 5 个轮数管理函数 |
+| `src/services/sync.js` | pullFromCloud cardStatus 改为合并策略（基于 updatedAt），移除 `db.cardStatus.clear()`；移除 round_count 字段 push/pull |
+| `src/pages/Memorize.jsx` | handleComplete 修复（showCompleteModal）；lastReviewedCardId 进度恢复；dueCardsCount useMemo；handleMark 等待实际记录+失败回滚；predictedRecord 同步 SM-2 隔离；userOverride UI 提示；weak 模式基于 wrongAnswers 筛选；addWrongAnswer 统一写入；循环复习弹窗（艾宾浩斯模式最后一张到期卡片标记后仍有到期卡片时显示） |
+
+七之一、循环复习弹窗（艾宾浩斯模式）───────────────────────────────────────────────────────────────────
+触发入口：
+  - src/pages/Memorize.jsx - handleMark(status) 中 nextFilteredLen > 0 且 currentIndex 已在最后一张时
+
+触发条件：
+  - isEbbinghausMode = reviewOnly || studyMode === 'ebbinghaus'
+  - nextFilteredLen > 0（标记后仍有到期卡片，通常是标记"未掌握"导致卡片仍到期）
+  - currentIndex >= nextFilteredLen 或 currentIndex === nextFilteredLen - 1（已在最后一张）
+
+核心机制：
+  - 显示 showLoopBackModal 弹窗，loopBackRemainingCount 显示剩余到期卡片数
+  - 用户选择"重新复习"：setCurrentIndex(0) 跳回第一张继续复习
+  - 用户选择"结束复习"：延迟 200ms 后调用 handleComplete() 显示完成弹窗
+  - 关闭动画：closingLoopBack state，200ms 动画后清空 showLoopBackModal（与完成弹窗动画体系一致）
+
+设计目的：
+  - 避免用户在艾宾浩斯模式下背诵到最后一张到期卡片后，需多次点击"上一页"才能回到第一张
+  - 提供明确的"重新复习/结束复习"选择，提升用户体验
+  - 仅影响艾宾浩斯模式（reviewOnly 或 studyMode === 'ebbinghaus'），不影响 sequential/active/weak 模式
+
+涉及状态：
+  - showLoopBackModal：是否显示循环复习弹窗
+  - closingLoopBack：关闭动画进行中（防抖）
+  - loopBackRemainingCount：剩余到期卡片数量（弹窗中展示）
+
+涉及函数：
+  - handleCloseLoopBackModal：关闭循环复习弹窗（带 200ms 动画）
+  - handleMark：修改卡片切换逻辑，在最后一张且仍有到期卡片时触发弹窗
+
+八、验证 ───────────────────────────────────────────────────────────────────
+- 热更新预览：sequential/active 模式标记 review 不影响艾宾浩斯复习节奏
+- 热更新预览：ebbinghaus/active 模式切换分类后进度正确恢复
+- 热更新预览：handleComplete 不再崩溃，弹窗正常显示
+- 热更新预览：dueCardsCount 动态计算，状态同步
+- 多设备同步：Pull 不再清空本地 cardStatus，基于 updatedAt 合并保留较新记录
+- SQL 检测：本次无 schema 变更，不需要更新 SQL 文件

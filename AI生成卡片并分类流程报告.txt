@@ -1,0 +1,393 @@
+# AI 生成卡片并分类的流程报告
+# 更新日期: 2026-06-17 (新增: 主题聚类步骤 + 用户确认弹窗)
+# 关联文件:
+#   - src/pages/Category.jsx (入口：两步生成的调度中心 + 主题确认弹窗)
+#   - src/services/aiService.js (统一调度：extractKnowledgePoints / generateCardsFromKnowledgePoints / clusterKnowledgePointsByTopic / classifyCardsByCategoryContent)
+#   - src/services/iflytekAi.js (讯飞星火实现：generateCardsWithSpark / 一条龙 prompt)
+#   - src/utils/constants.js (Prompt 模板: KNOWLEDGE_POINT_EXTRACTION_PROMPT / BATCH_CARDS_FROM_KNOWLEDGE_POINTS_PROMPT / CARD_GENERATION_PROMPT)
+#   - src/services/db.js (addChapter, getUnitsByCategory, getChaptersByCategory)
+# ============================================================
+
+# 一、整体架构概览（更新版）
+
+Category.jsx (用户输入文本)
+  → Step 1: extractKnowledgePoints (从原始文本提取"原始知识点"列表)
+  → 用户确认/编辑知识点列表 (中间 UI 弹窗: KpConfirmModal)
+  → Step 2: generateCardsFromKnowledgePoints (为每条知识点生成一张双面卡片)
+  → Step 2.5: clusterKnowledgePointsByTopic (AI 自主决定主题数量，按语义聚类)
+  → 用户确认/调整主题分组 (中间 UI 弹窗: TopicConfirmModal)
+  → Step 3: classifyCardsByCategoryContent (基于用户确认的主题，把卡片归类到章节/单元)
+  → 入库: addUnit / addCard / addChapter (按 unitDataList 批量写入 IndexedDB)
+
+# 二、入口流程 (Category.jsx) - 更新版
+
+Category.jsx 的 generateCardsForCategory (handleGenerate)
+  1. 构造 aiConfig:
+     - apiKey / model / aiServiceMode
+     - sparkApiKey / sparkApiSecret (讯飞)
+     - volcanoApiKey / dashscopeApiKey
+     - summaryLevel (concise / standard / detailed)
+  2. 获取 existingUnits (本分类下的所有单元) 与 existingChapters (本分类下的所有章节)
+  3. 调用 extractKnowledgePoints (Step 1)
+  4. 调用 filterHeadingLikePoints 客户端过滤章节标题类条目
+  5. 弹出 KpConfirmModal，用户确认/编辑知识点
+  6. 用户点击"生成卡片"后调用 generateCardsFromKnowledgePoints (Step 2)
+  7. 解析 Step 2 返回的 units 结构，构建 flatNewCards
+  8. 【新增】调用 clusterKnowledgePointsByTopic (Step 2.5) 进行主题聚类
+  9. 【新增】弹出 TopicConfirmModal，用户确认/调整主题分组
+  10. 用户点击"确认"后调用 classifyCardsByCategoryContent (Step 3)，传入用户确认的主题
+  11. 处理 AI 建议的新章节 (addChapter)
+  12. 构建 unitDataList → mergeSimilarUnits (合并相似单元)
+  13. 批量写入数据库
+
+# 三、Step 1: extractKnowledgePoints (aiService.js:561-720)
+
+输入: 原始文本 text
+输出: { knowledge_points: [...] } JSON 数组
+
+Prompt: KNOWLEDGE_POINT_EXTRACTION_PROMPT (constants.js:217)
+  - 角色: 考研知识点提炼助手
+  - 强约束: 禁止提取纯章节标题 (例: "第一章 XXX"、"一、XXX")
+  - 规则: 严格忠于原文、不做加工、不做拓展、保持原文措辞、独立拆分、禁止标题分离
+
+分批处理:
+  - MAX_TEXT_LENGTH = 5000 字符
+  - 超过则按段落切分到多个 chunks
+  - 每个 chunk 独立调用 AI
+  - mergeKnowledgePointResults 合并 + 去重所有 chunks 的结果
+
+客户端过滤:
+  - filterHeadingLikePoints 进一步识别并移除章节标题类条目
+  - 显示 Toast "已自动过滤 N 条章节标题类内容"
+
+日志: logAiCall purpose='knowledge-point-extraction'
+
+# 四、Step 2: generateCardsFromKnowledgePoints (aiService.js:763-880+)
+
+输入: knowledgePoints (string[])
+输出: { units: [{name, cards: [{knowledge_point, front, back, kpMarker}]}] } JSON
+
+Prompt: BATCH_CARDS_FROM_KNOWLEDGE_POINTS_PROMPT_BY_LEVEL (constants.js:285)
+  - 角色: 背诵卡片制作助手
+  - 规则: 每条知识点对应一张卡片、一一对应、不增不减
+  - 关键约束:
+    1. front 使用问题形式或关键词挖空
+    2. back 内容只能来源于该条知识点的原文 (不添加外部知识)
+    3. knowledge_point 必须原样返回
+    4. 按知识体系逻辑分组 (主题相关的归为同一单元)
+    5. 单元至少包含 2 张卡片
+    6. 单元名称使用宽泛的概括性命名 (不超过 16 字)
+  - summaryLevel 影响密度 (concise/standard/detailed)
+
+分批处理:
+  - BATCH_KNOWLEDGE_POINTS_SIZE = 30 条/批
+  - 每批生成时给每条知识点打上全局 kpMarker: __KP_N__
+  - Prompt 中要求 AI 在返回中保留 kpMarker 字段
+  - max_tokens 动态计算: 4096 + kpCount × 220 (上限 8192)
+
+客户端处理:
+  - parseAIResponse 解析 AI 返回的 JSON
+  - attachOriginalKnowledgePoints 关联原始知识点 (kpMarker 匹配)
+  - 解析为 flatNewCards (扁平化): { front, back, knowledge_point, kpMarker, originalUnitName }
+  - originalUnitName 来自 AI 分配的 unit.name
+
+日志: logAiCall purpose='card-generation-from-knowledge-points'
+
+# 五、Step 3: classifyCardsByCategoryContent (aiService.js:1046-1100)
+
+输入: existingUnits, existingCards, newCards, config
+输出: assignments[] 数组, 每项含 { cardIndex, unitId | newUnitName, chapterId | newChapterName }
+
+入口分流逻辑 (按 aiServiceMode 和模型能力):
+  A. 弱模型 (Spark Lite) + classificationDepth='chapter-and-unit':
+     → classifyCardsByKnowledgePointsMultiRound (多轮分类)
+  B. 弱模型 (Spark Lite) + 任意深度:
+     → classifyCardsByKnowledgePoints (两轮分类)
+  C. mode='same-category-reorganize':
+     → classifySameCategoryReorganize (同分类重整)
+  D. mode='cross-category-auto':
+     → classifyCrossCategoryAuto (跨分类自动归类)
+  E. 强模型 + 现有卡片 > STRONG_CLASSIFY_CARD_THRESHOLD (200) + chapter-and-unit:
+     → classifyCardsMultiRound (多轮分批, 每批 BATCH_CHAPTER_SIZE=3 个章节)
+  F. 默认路径 (强模型一次性归类):
+     → 走通用分类逻辑 (1145+ 行)
+
+# 六、路径 A: classifyCardsByKnowledgePointsMultiRound (弱模型多轮)
+
+针对 Spark Lite + chapter-and-unit 模式
+
+逻辑:
+  1. 按现有章节分组
+  2. 多个知识点不限制新章节数
+  3. 每一轮次: 一次 AI 调用处理本批所有未归类知识点
+  4. 多轮迭代直到所有知识点都被覆盖
+
+# 七、路径 B: classifyCardsByKnowledgePoints (弱模型两轮)
+
+针对 Spark Lite
+
+逻辑:
+  1. 第一轮: 一次 AI 调用，对所有知识点做自由分类 (可创建新单元)
+  2. 第二轮: 对未覆盖的知识点再次调用 AI
+  3. 两轮后仍有未覆盖的 → 用 fallbackClassify (关键词匹配)
+
+Prompt 关键约束:
+  - chapter-and-unit: 同时输出 chapterIndex 和 unitName
+  - 章节名称 ≤ 12 字
+  - 单元名称宽泛概括
+
+# 八、路径 E: classifyCardsMultiRound (强模型大数据)
+
+针对强模型 (DeepSeek/Volcano/Dashscope) + 现有卡片 > 200
+
+逻辑 (aiService.js:1748):
+  1. 按现有章节分组: chapterGroups = [{ chapter, units, cards }, ...]
+  2. 分批: 每批 BATCH_CHAPTER_SIZE = 3 个章节
+  3. 多轮迭代:
+     - 第一轮 ~ 第 N-1 轮: 仅归类到现有结构 (禁止创建新章节/单元)
+     - 最后一轮: 允许创建新章节/单元
+  4. 每次调用: 传入本批章节下的所有现有单元 + 示例卡片 + 剩余未归类的新卡片
+  5. 追踪 classifiedSet, 防止重复归类
+
+⚠️ 问题点:
+  - 章节按 BATCH_CHAPTER_SIZE=3 分批，最后一轮才能创建新章节
+  - 当章节很多时 (例如 15+ 个章节)，需要 5+ 轮 AI 调用
+  - 每轮的 Prompt 都要包含本批章节下的所有现有单元 + 5张示例卡片/单元
+  - 当一个分类下有 15+ 个章节时，Prompt 体积会非常大，AI 容易出错
+
+# 九、路径 F: 强模型一次性归类 (1145+)
+
+针对强模型 + 现有卡片 ≤ 200
+
+逻辑:
+  1. 构建 chapterBlocks (现有章节结构)
+     - 章节标题
+     - 章节下的单元 + 5 张示例卡片
+  2. 构建 unitBlocks (未归属章节的单元)
+  3. 构造 Prompt 一次性提交
+  4. 解析 AI 返回的 JSON
+  5. 通过索引映射将 AI 建议的 chapterIndex/unitIndex 还原为真实 ID
+
+⚠️ 问题点:
+  - 当一个分类下有 5+ 个章节、每个章节 10+ 个单元时
+  - Prompt 体积会爆炸 (章节+单元+示例卡片)
+  - 强模型可能超出 token 上限或产生幻觉
+
+# 十、强模型归类 Prompt 结构 (1300+ 行)
+
+chapter-and-unit 模式 Prompt:
+  - contextHint (角色描述)
+  - 【整理规则】:
+    1. 每个知识点必须且只能归入一个章节和一个单元
+    2. 自由判断: 归入现有章节/单元或创建新章节/单元
+    3. 新章节/单元名称要宽泛概括, ≤12 字
+    4. 同主题知识点归入同一章节/单元
+  - 【现有章节】: chapterIndex|name 列表
+  - 【现有单元】: unitIndex|name 列表 (含所属章节)
+  - 【待归类卡片】: cardIndex|front|back 列表
+  - 【输出格式】:
+    [{"index":0, "chapterIndex":0, "unitId":"xxx", "isNew":false},
+     {"index":1, "chapterIndex":null, "newChapterName":"新章节", "newUnitName":"新单元", "isNew":true}, ...]
+
+# 十一、合并与入库 (Category.jsx 732+)
+
+1. 解析 assignmentsSafe (AI 归类结果)
+2. 收集 newChapterNames → addChapter 创建新章节
+3. 构建映射:
+   - existingUnitIdToCards: existing unitId → cards[]
+   - newUnitNameToCards: new unit name → cards[]
+4. 构建 unitDataList = [{ name, matchedUnitId, chapterId, cards }, ...]
+5. mergeSimilarUnits: 名称相似的单元合并
+6. 去重检查 (与 existingCards 比对)
+7. 批量 addUnit / addCard (匹配 chapterId)
+
+# 十二、章节与单元数过多的问题分析
+
+⚠️ 主要问题点 (用户反馈):
+
+1. 章节数过多问题:
+   - 当分类下有 15+ 个章节时
+   - 强模型路径 E (classifyCardsMultiRound) 需要 5+ 轮 AI 调用
+   - 每轮都传本批章节下的所有单元+示例卡片
+   - 极大增加 token 消耗和响应时间
+
+2. 章节分类过于精细:
+   - AI 倾向于把每个细分子主题都识别为单独章节
+   - 例如: "计算机硬件" → 拆分为 "CPU 基础"、"内存管理"、"存储设备"、"总线接口"... 10+ 章节
+   - 实际用户期望的章节粒度可能只有 3-5 个
+
+3. 单元重复创建:
+   - 不同批次生成的卡片可能产生同主题的单元
+   - mergeSimilarUnits 只能处理名称相似的合并
+   - 但当 AI 起名风格不一致时 (如 "硬件基础" vs "计算机硬件"), 难以合并
+
+4. Prompt 中示例卡片过多:
+   - 每个单元塞 5 张示例卡片
+   - 章节多时, Prompt 体积爆炸
+   - 强模型可能截断或混淆
+
+5. 强模型归类 (1145+ 行) 一次性提交所有信息:
+   - chapter-and-unit 模式
+   - 现有 10 个章节 × 5 个单元/章 = 50 个单元
+   - 50 单元 × 5 张示例卡片 = 250 张示例卡片
+   - 加上 30 张新卡片 + 30 个知识点
+   - Prompt 长度可能超过 8000+ tokens
+
+# 十三、可能的问题根因
+
+1. BATCH_CHAPTER_SIZE = 3 太小, 弱模型尤其慢
+2. 缺少对"分类粒度"的引导 (Prompt 没有要求 AI 控制章节数量)
+3. 缺少对"单元宽泛命名"的强制约束
+4. 缺少客户端"二阶段合并"机制 (归类后再次 AI 调用合并相似章节)
+5. 强模型路径 F 没有对章节数量做上限检查
+
+# 十四、相关常量与配置
+
+STRONG_CLASSIFY_CARD_THRESHOLD = 200   // 强模型大数据阈值
+BATCH_CHAPTER_SIZE = 3                  // 每批处理的章节数
+BATCH_KNOWLEDGE_POINTS_SIZE = 30        // 知识点批处理大小
+MAX_TEXT_LENGTH = 5000                  // 知识点提取时的单次最大文本长度
+MAX_QUESTIONS_PER_CARD_TYPE_DIFFICULTY = 1  // 出题相关 (与本次任务相关)
+
+# 十五、文件位置速查
+
+- 入口 (Category.jsx):   src/pages/Category.jsx#L420-L780
+- Step 1 提取:           src/services/aiService.js#L561-L720
+- Step 2 生成:           src/services/aiService.js#L763-L880
+- Step 3 归类入口:       src/services/aiService.js#L1046-L1100
+- 多轮分批归类 (强):     src/services/aiService.js#L1748-L1860
+- 知识点归类 (弱):       src/services/aiService.js#L1990-L2200
+- 一次性归类 (强默认):   src/services/aiService.js#L1130-L1700
+- 合并入库 (Category):   src/pages/Category.jsx#L732-L820
+- Prompt 模板:           src/utils/constants.js#L217-L310
+- 强模型单次调用 (历史): src/services/iflytekAi.js#L76-L146
+
+# 十六、新增：主题聚类步骤 (Step 2.5)
+
+目的: 在卡片归类之前，先让 AI 按语义对知识点进行主题分组，控制章节数量上限
+
+位置: src/services/aiService.js#L888-L1229
+
+核心函数:
+  - clusterKnowledgePointsByTopic(knowledgePoints, config, previousTopics)
+  - calculateTopicRange(kpCount) → [suggestedMin, suggestedMax]
+  - postProcessTopics(rawTopics, knowledgePoints, suggestedMin, suggestedMax)
+  - adjustTopicCount(topics, knowledgePoints, suggestedMin, suggestedMax)
+  - splitTopicsSimple(topics, targetCount) / splitTopicsByAi(topics, knowledgePoints, config, targetCount)
+  - mergeSimilarTopics(topics, knowledgePoints, targetCount)
+  - calculateMixedSimilarity(topic1, topic2, knowledgePoints)
+
+输入: knowledgePoints (string[])
+输出: [{ topicName, pointIndices }] 主题数组
+
+Prompt 核心规则:
+  1. 自主决定：AI 根据知识点语义分布自行决定主题数量
+  2. 建议范围：根据知识点数量给出软约束（如 5-9 个知识点建议 1-3 个主题）
+  3. 判断标准：
+     - 知识点高度相关 → 主题数量较少
+     - 知识点涉及多个独立领域 → 主题数量较多
+     - 每个主题至少 2 个知识点
+     - 避免过度细分
+  4. 主题命名：宽泛概括性名称，≤12字
+  5. 必须覆盖：每个知识点必须且只能归入一个主题
+
+建议范围对照表:
+  | 知识点数量 | 建议范围 | 说明 |
+  | < 5        | 1        | 太少，不需要分组 |
+  | 5-9        | 1-3      | 少量，最多三组 |
+  | 10-19      | 2-4      | 中等，最多四组 |
+  | 20-29      | 3-6      | 较多，最多六组 |
+  | 30-49      | 4-8      | 很多，最多八组 |
+  | ≥ 50       | 5-10     | 海量，上限十组 |
+
+后处理修正:
+  1. 过滤无效主题（无 topicName 或无 pointIndices）
+  2. 索引去重和边界检查
+  3. 处理未覆盖的知识点（归入"其他知识点"）
+  4. 兜底修正：
+     - 主题太少 → splitTopicsSimple / splitTopicsByAi
+     - 主题太多（超过建议上限 1.5 倍）→ mergeSimilarTopics
+
+拆分策略:
+  - splitTopicsSimple: 简单平均拆分（兜底）
+  - splitTopicsByAi: AI 语义拆分（需要额外 AI 调用）
+
+合并策略（混合相似度）:
+  - 名称相似度权重: 30%
+  - 内容相似度权重: 70%
+  - 合并阈值: 0.3
+
+用户参考提示:
+  - 当用户点击"重新聚类"时，将用户当前的主题作为参考传入
+  - Prompt 中包含：【用户参考】用户之前对主题分组做了调整，请参考以下结构
+
+# 十七、新增：主题确认弹窗 (TopicConfirmModal)
+
+位置: src/pages/Category.jsx#L3749-L3958
+
+功能:
+  1. 展示 AI 生成的主题分组列表
+  2. 显示每个主题包含的知识点数量和内容预览
+  3. 用户可编辑主题名称（≤12字）
+  4. 用户可点击"重新聚类"重新生成主题
+  5. 用户点击"确认"后继续分类流程
+
+UI 结构:
+  - 标题区：显示知识点总数
+  - 主题列表区：每个主题卡片包含
+    - 主题名称（可编辑）
+    - 知识点数量
+    - 知识点内容预览（最多显示 3 个）
+  - 操作按钮区：
+    - 重新聚类（传入用户当前主题作为参考）
+    - 取消
+    - 确认
+
+状态管理:
+  - showTopicConfirm: 是否显示弹窗
+  - currentTopics: 当前主题列表
+  - topicConfirmLoading: 加载状态
+  - topicConfirmConfig: 配置信息（existingUnits, aiConfig, pointsToUse, kpMarkers, existingChapters, flatNewCards）
+
+回调函数:
+  - handleTopicConfirm(finalTopics): 用户确认后继续分类流程
+  - handleTopicCancel(): 取消弹窗
+  - handleTopicRegenerate(): 重新聚类（传入 currentTopics 作为参考）
+
+# 十八、数据流变更对比
+
+原流程:
+  知识点 → Step2(生成卡片) → Step3(直接归类到章节/单元)
+
+新流程:
+  知识点 → Step2(生成卡片) → Step2.5(主题聚类) → 用户确认主题 → Step3(基于主题归类)
+                                   ↓
+                              控制章节数量上限
+                              提高归类准确性
+                              用户可干预调整
+
+# 十九、方案优势
+
+| 维度 | 原方案 | 新方案（主题聚类） |
+|------|--------|-------------------|
+| 章节数量控制 | 无限制，AI 自由发挥 | 通过建议范围软约束 |
+| 归类准确性 | 基于字符串匹配 + AI 自由判断 | 基于语义理解的主题分组 |
+| 用户干预 | 无中间确认步骤 | 用户可编辑主题名称、重新聚类 |
+| 单元重复 | 可能产生同主题不同命名 | 主题作为约束，减少重复 |
+| Prompt 复杂度 | 一次性传入所有信息 | 先聚类再归类，分步处理 |
+| token 消耗 | 单次大 Prompt | 多步小 Prompt（聚类 + 归类） |
+
+# 二十、文件位置速查（更新版）
+
+- 入口 (Category.jsx):   src/pages/Category.jsx#L420-L700
+- Step 1 提取:           src/services/aiService.js#L561-L720
+- Step 2 生成:           src/services/aiService.js#L769-L886
+- Step 2.5 主题聚类:     src/services/aiService.js#L888-L1229
+- Step 3 归类入口:       src/services/aiService.js#L1230-L1280
+- 多轮分批归类 (强):     src/services/aiService.js#L1830-L1950
+- 知识点归类 (弱):       src/services/aiService.js#L2070-L2300
+- 一次性归类 (强默认):   src/services/aiService.js#L1310-L1800
+- 合并入库 (Category):   src/pages/Category.jsx#L773-L918
+- 主题确认弹窗:          src/pages/Category.jsx#L3749-L3958
+- Prompt 模板:           src/utils/constants.js#L217-L310
+- 强模型单次调用 (历史): src/services/iflytekAi.js#L76-L146

@@ -1,0 +1,77 @@
+// Top-level build file (AGP 9.2.1 + Gradle 9.5.0)
+// 关键修复：capacitor.settings.gradle 使用绝对路径（避免含空格路径解析失败）
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:9.2.1'
+        classpath 'com.google.gms:google-services:4.4.4'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21'
+    }
+}
+
+apply from: "variables.gradle"
+
+rootProject.ext.kotlin_version = '2.2.21'
+
+subprojects {
+    ext {
+        compileSdkVersion = rootProject.ext.compileSdkVersion
+        minSdkVersion = rootProject.ext.minSdkVersion
+        targetSdkVersion = rootProject.ext.targetSdkVersion
+        kotlin_version = '2.2.21'
+        androidxAppCompatVersion = rootProject.ext.androidxAppCompatVersion
+        androidxJunitVersion = rootProject.ext.androidxJunitVersion
+        androidxEspressoCoreVersion = rootProject.ext.androidxEspressoCoreVersion
+        junitVersion = rootProject.ext.junitVersion
+    }
+
+    // Kotlin 编译目标设为 17（与 Java compileOptions 一致）
+    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach { task ->
+        task.compilerOptions {
+            jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+        }
+    }
+
+    // 在 afterEvaluate 中覆盖 compileOptions（避免 AGP 按 Java 21 推断 toolchain）
+    // AGP 9.x 会根据 compileOptions 推断需要的 JDK toolchain 版本
+    // capacitor 子项目设了 JavaVersion.VERSION_21 但系统只有 JDK 26
+    project.afterEvaluate { p ->
+        try {
+            def androidExt = p.extensions.findByName('android')
+            if (androidExt != null) {
+                androidExt.compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
+                }
+                // 对所有子项目禁用 PNG crunching，避免 AAPT2 daemon 在 Windows 上失败
+                try {
+                    androidExt.aaptOptions {
+                        cruncherEnabled = false
+                    }
+                } catch (Exception ignored) { }
+            }
+        } catch (Exception ignored) { }
+
+        // 禁用 verifyReleaseResources 任务（AAPT2 在 Windows 上处理 9-patch PNG 失败）
+        try {
+            p.tasks.matching { it.name.contains('verifyReleaseResources') }.all { task ->
+                task.enabled = false
+            }
+        } catch (Exception ignored) { }
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}

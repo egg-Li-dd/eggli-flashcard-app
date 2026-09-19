@@ -1,0 +1,1016 @@
+# 弱模型（讯飞 Spark Lite）卡片生成完整工作流程技术报告
+
+## 概述
+
+本报告详细阐述弱模型（讯飞 Spark Lite）在卡片生成应用中的完整四阶段工作流程，涵盖临时原始知识点生成、去重处理、归类合并及卡片生成输出。
+
+---
+
+## 一、临时原始知识点生成机制
+
+### 1.1 数据来源与输入处理
+
+**入口函数**：`extractKnowledgePoints(text, unitNames, config, onProgress)`
+
+**输入来源**：用户输入的文本内容（教材、笔记、考纲等）
+
+**文本分割策略**：
+- 弱模型 `MAX_TEXT_LENGTH` = 3000 字符（强模型为 5000）
+- 按段落/句子边界智能分块，避免在句子中间切断
+- 长文本分割为多个 chunk，每个 chunk 独立调用 AI
+
+```javascript
+// aiService.js:583-586
+const isWeakSpark = aiServiceMode === 'iflytek-spark' && (!model || model === 'lite')
+const MAX_TEXT_LENGTH = isWeakSpark ? 3000 : 5000
+```
+
+### 1.2 算法处理
+
+**Prompt 模板**：`KNOWLEDGE_POINT_EXTRACTION_PROMPT_WEAK`
+
+核心规则：
+1. **一条输入对应一条输出**：每个独立陈述、定义、原理必须单独输出
+2. **保留编号与内容**：编号+内容必须一起输出
+3. **跳过纯标题**：无实质内容的章节标题跳过
+4. **保留原文措辞**：不修改、不总结
+5. **不遗漏**：不因"主题相关"就合并
+
+```javascript
+// constants.js:247-266
+export const KNOWLEDGE_POINT_EXTRACTION_PROMPT_WEAK = `你是考研知识点提取助手...
+核心规则（必须严格遵守）：
+1. 【一条输入对应一条输出】...
+2. 【保留编号与内容】...
+...
+`
+```
+
+### 1.3 参数设置
+
+| 参数 | 弱模型值 | 强模型值 | 说明 |
+|------|---------|---------|------|
+| MAX_TEXT_LENGTH | 3000 | 5000 | 单批最大文本长度 |
+| max_tokens | 8192 | 4096 | 生成上限 |
+| temperature | 0.5 | 0.7 | 随机性（弱模型更保守） |
+
+```javascript
+// aiService.js:599
+const result = await callAiProvider(prompt, { 
+  ...config, 
+  maxTokens: isWeakSpark ? 8192 : 4096 
+})
+```
+
+### 1.4 数量校验机制
+
+**函数**：`validateKnowledgePointCount(content, inputText, isWeak)`
+
+```javascript
+// aiService.js:771-803
+// 估算：每 150 字符可以形成一个独立知识点
+const textLength = inputText?.length || 0
+const expectedMin = Math.max(1, Math.floor(textLength / 150))
+const ratio = actualCount / expectedMin
+
+// 阈值：强模型 30%，弱模型 50%（更严格）
+const threshold = isWeak ? 0.5 : 0.3
+```
+
+### 1.5 典型案例
+
+**输入示例**：
+```
+"1. 操作系统管理硬件资源。2. 操作系统管理软件资源。3. 操作系统提供用户接口。"
+```
+
+**预期输出**：
+```json
+{
+  "knowledge_points": [
+    "1. 操作系统管理硬件资源。",
+    "2. 操作系统管理软件资源。",
+    "3. 操作系统提供用户接口。"
+  ]
+}
+```
+
+---
+
+## 二、临时原始知识点去重处理
+
+### 2.1 去重方法
+
+**主函数**：`deduplicateKnowledgePoints(tempPoints, existingPoints, aiConfig, onProgress)`
+
+**弱模型专用配置**：
+
+| 配置项 | 弱模型值 | 说明 |
+|--------|---------|------|
+| maxBatchSize | 25 | 每批最大知识点数 |
+| maxExistingInPrompt | 50 | prompt 中带入的现有知识点上限 |
+| similarityThreshold | 0.70 | 相似度阈值（弱模型稍低） |
+
+```javascript
+// aiService.js:6446-6451
+const WEAK_MODEL_DEDUP = {
+  maxBatchSize: 25,           // 比强模型小
+  maxExistingInPrompt: 50,   // 比强模型少
+  similarityThreshold: 0.70,   // 稍低，减少误判
+}
+```
+
+### 2.2 相似度计算算法
+
+**强模型路径**：基于 AI 判断的语义相似度
+```javascript
+// aiService.js:6467-6485
+const prompt = `你是一个知识点去重助手。请判断【待检测知识点】中的每一个知识点是否与【现有知识点】中的某个知识点语义相同或高度相似。
+【高度相似】的定义：表达相同或相近的知识概念，可以有不同的表述方式。
+...
+只有 similarity > 0.75 时才标记 isDuplicate: true`
+```
+
+### 2.3 本地 Fallback 去重
+
+当 AI 不可用时，使用精确匹配 + 子串匹配：
+
+```javascript
+// aiService.js:6582-6609
+function localDedupFallback(tempPoints, existingPoints) {
+  // 1. 精确匹配
+  const exactSet = new Set(existingPoints.map(p => String(p).toLowerCase().trim()))
+  
+  // 2. 子串匹配（长度 >= 4 的知识点）
+  for (const ep of existingPoints) {
+    if (epLower.includes(tp) || tp.includes(epLower)) {
+      partialDuplicates.push({ index: i, matched: ep })
+    }
+  }
+}
+```
+
+### 2.4 归一化去重规则
+
+```javascript
+// aiService.js:744-748
+// 归一化：去除所有空白和标点，用于精确去重
+const normalized = trimmed.replace(/[\s\p{P}]/gu, '').toLowerCase()
+if (!normalized) continue
+if (seenKeys.has(normalized)) continue
+seenKeys.add(normalized)
+```
+
+### 2.5 数据质量验证指标
+
+| 指标 | 目标值 |
+|------|--------|
+| 重复率 | ≤ 5% |
+| 有效知识点保留率 | ≥ 90% |
+| 语义一致率 | ≥ 85% |
+
+---
+
+## 三、原始知识点归类合并流程
+
+### 3.1 分类标准
+
+**函数**：`clusterKnowledgePointsByTopic` (强模型) / `clusterKnowledgePointsByTopicWithSpark` (弱模型)
+
+**主题数量建议范围计算**：
+```javascript
+// aiService.js:1071
+const [suggestedMin, suggestedMax] = calculateTopicRange(kpCount, granularity)
+
+// 根据知识点数量和粒度确定范围：
+// - concise（简略）: 2-4 个主题
+// - standard（标准）: 4-6 个主题  
+// - detailed（详细）: 6-10 个主题
+```
+
+### 3.2 弱模型专用聚类路径
+
+```javascript
+// aiService.js:1059-1068
+const isWeakSpark = aiServiceMode === 'iflytek-spark' && (!model || model === 'lite')
+if (isWeakSpark) {
+  const password = normalizeSparkApiPassword(sparkApiKey)
+  if (password) {
+    return clusterKnowledgePointsByTopicWithSpark(knowledgePoints, password, model, granularity, previousTopics)
+  }
+}
+```
+
+### 3.3 主题提取算法
+
+```javascript
+// iflytekAi.js:559-579
+const prompt = `你是知识体系整理专家。请将以下考研知识点按主题语义进行聚类分组。
+
+【主题数量决策规则】：
+1. 自主决定：根据知识点的语义分布，由你自行决定最合适的主题数量
+2. 建议范围：建议 ${suggestedMin} - ${suggestedMax} 个主题
+3. 判断标准：
+   - 如果知识点内容高度相关，主题数量应较少
+   - 如果知识点涉及多个独立知识领域，主题数量应较多
+   - 每个主题至少包含 2 个知识点
+   - 避免过度细分（不要每个知识点一个主题）
+4. 主题命名：使用宽泛的概括性名称，不超过12字
+...
+```
+
+### 3.4 知识点关联权重计算
+
+AI 基于语义相似度自主判断，输出格式：
+```json
+[
+  {"topicName": "计算机网络基础", "pointIndices": [0, 1, 2]},
+  {"topicName": "数据结构算法", "pointIndices": [3, 4, 5]}
+]
+```
+
+### 3.5 后处理逻辑
+
+```javascript
+// aiService.js:1166-1219
+function postProcessTopics(rawTopics, knowledgePoints, suggestedMin, suggestedMax) {
+  // 1. 过滤无效主题
+  const validTopics = rawTopics.filter(t => 
+    t.topicName && Array.isArray(t.pointIndices) && t.pointIndices.length > 0
+  )
+  
+  // 2. 索引去重和边界检查
+  const covered = new Set()
+  for (const idx of indices) {
+    if (!covered.has(idx)) {
+      covered.add(idx)
+      uniqueIndices.push(idx)
+    }
+  }
+  
+  // 3. 处理未覆盖的知识点（分散到已有主题）
+  if (covered.size < knowledgePoints.length) {
+    const remaining = []
+    for (let i = 0; i < knowledgePoints.length; i++) {
+      if (!covered.has(i)) remaining.push(i)
+    }
+    // 分散到已有主题，避免创建"其他"主题
+    for (let i = 0; i < cleaned.length && remaining.length > 0; i++) {
+      const toAdd = remaining.splice(0, distributeCount)
+      cleaned[i].pointIndices.push(...toAdd)
+    }
+  }
+}
+```
+
+### 3.6 Fallback 降级逻辑
+
+当 Spark API 失败时，按知识点顺序均分：
+
+```javascript
+// iflytekAi.js:500-516
+function sparkFallbackCluster(knowledgePoints, suggestedMax) {
+  const groups = []
+  const chunkSize = Math.max(2, Math.ceil(knowledgePoints.length / suggestedMax))
+  
+  for (let i = 0; i < knowledgePoints.length; i += chunkSize) {
+    const chunk = knowledgePoints.slice(i, i + chunkSize)
+    const topicName = chunk[0].slice(0, 12) || `知识点组${groups.length + 1}`
+    groups.push({
+      topicName,
+      pointIndices: chunk.map((_, j) => i + j),
+    })
+  }
+  return groups
+}
+```
+
+---
+
+## 四、卡片生成与输出机制
+
+### 4.1 模板设计
+
+**函数**：`generateCardsFromKnowledgePoints(knowledgePoints, config, onProgress)`
+
+**Prompt 模板**：`BATCH_CARDS_FROM_KNOWLEDGE_POINTS_PROMPT`
+
+```javascript
+// constants.js:269-302
+function buildBatchCardsPromptCore(densityHint, backHint) {
+  return `你是专业的背诵卡片制作助手。请为以下每条原始知识点生成一张双面背诵卡片，并按知识体系逻辑自动分组到学习单元。
+
+核心原则：卡片内容严格来源于对应的原始知识点，不做额外知识补充。
+要求：
+1. 每条知识点对应一张卡片，一一对应，不增不减
+2. 卡片正面使用问题形式或关键词挖空形式
+3. 卡片背面填写完整答案，内容只能来源于该条知识点的原文
+4. 不做拓展：不从知识点之外补充背景、举例、联想或同类比较
+5. knowledge_point 字段必须原样返回对应的原始知识点内容
+6. kpMarker 字段必须原样保留 [__KP_N__] 标记，这是知识点全局索引
+7. ${densityHint}
+8. ${backHint}
+9. 按知识体系逻辑分组：将主题相关的卡片归为同一单元，每个单元至少包含2张卡片
+10. 单元名称使用宽泛的概括性命名，不超过16个字
+
+输出格式：
+{
+  "units": [
+    {
+      "name": "单元名称",
+      "cards": [
+        {
+          "kpMarker": "[__KP_0__]",
+          "knowledge_point": "原始知识点原文",
+          "front": "卡片正面（问题/挖空）",
+          "back": "卡片背面（完整答案）"
+        }
+      ]
+    }
+  ]
+}
+`
+}
+```
+
+### 4.2 生成策略
+
+**分批策略**：
+```javascript
+// aiService.js:871-886
+const BATCH_KNOWLEDGE_POINTS_SIZE = 30  // 每批 30 个知识点
+const isWeakSpark = aiServiceMode === 'iflytek-spark' && (!model || model === 'lite')
+
+const callProvider = async (prompt, inputLog, kpCount) => {
+  // 弱模型：更低的 temperature，更高的 max_tokens
+  const effectiveTemperature = isWeakSpark ? 0.5 : 0.7
+  const effectiveMaxTokens = isWeakSpark
+    ? Math.min(16384, 4096 + kpCount * 400)  // 每张卡片预留 400 tokens
+    : computeMaxTokens(kpCount || 30)
+  ...
+}
+```
+
+**重试机制**：
+```javascript
+// aiService.js:952-958
+const MAX_RETRIES = 2
+for (let retry = 0; retry <= MAX_RETRIES && !batchSuccess; retry++) {
+  try {
+    const result = await callProvider(prompt, kpList, batch.length)
+    ...
+  } catch (err) {
+    lastError = err
+    await new Promise(r => setTimeout(r, 1000 * (retry + 1)))
+  }
+}
+```
+
+### 4.3 格式要求
+
+**卡片结构**：
+```json
+{
+  "kpMarker": "[__KP_0__]",      // 全局知识点索引
+  "knowledge_point": "原始知识点原文",  // 必须原样保留
+  "front": "问题/挖空形式",
+  "back": "完整答案"
+}
+```
+
+**输出格式**：
+```json
+{
+  "units": [
+    {
+      "name": "单元名称（≤16字）",
+      "cards": [...]
+    }
+  ]
+}
+```
+
+### 4.4 多模态信息整合
+
+**kpMarker 全局化处理**：
+```javascript
+// aiService.js:1428-1436
+if (card.kpMarker && typeof card.kpMarker === 'string') {
+  const match = card.kpMarker.match(/__KP_(\d+)__/)
+  if (match) {
+    const localIdx = parseInt(match[1], 10)
+    const globalIdx = offset + localIdx  // 加上批次偏移量
+    return { ...card, kpMarker: `__KP_${globalIdx}__` }
+  }
+}
+```
+
+### 4.5 质量评估与过滤
+
+```javascript
+// aiService.js:1426-1440
+const fixedCards = Array.isArray(unit.cards) ? unit.cards.map(card => {
+  // 过滤空卡片
+  if (!card.front || !card.back) return null
+  // 修复 kpMarker 全局化
+  ...
+}).filter(Boolean) : []
+
+totalCardsFiltered += (Array.isArray(unit.cards) ? unit.cards.length : 0) - fixedCards.length
+```
+
+**日志输出**：
+```javascript
+// aiService.js:1479
+console.log(`[mergeBatchCardResults] Summary: batches=${batchResults.length}, units=${allUnits.length}, totalFinalCards=${totalFinalCards}, processed=${totalCardsProcessed}, filtered=${totalCardsFiltered}`)
+```
+
+---
+
+## 五、完整流程图
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     用户输入文本（教材/笔记/考纲）                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 阶段一：临时原始知识点生成                                                 │
+│  - extractKnowledgePoints(text, config)                                │
+│  - MAX_TEXT_LENGTH = 3000（弱模型）/ 5000（强模型）                        │
+│  - Prompt: KNOWLEDGE_POINT_EXTRACTION_PROMPT_WEAK                        │
+│  - 参数: temperature=0.5, max_tokens=8192                               │
+│  - validateKnowledgePointCount() 数量校验                               │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 阶段二：临时原始知识点去重                                                 │
+│  - deduplicateKnowledgePoints(tempPoints, existingPoints, config)        │
+│  - 弱模型配置: maxBatchSize=25, similarityThreshold=0.70                 │
+│  - 精确匹配 + 子串匹配（本地 fallback）                                    │
+│  - 归一化去重: 去除空白和标点                                              │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 阶段三：原始知识点归类合并                                                 │
+│  - clusterKnowledgePointsByTopicWithSpark (弱模型专用)                   │
+│  - 主题数量建议: 2-10 个（根据粒度和数量计算）                               │
+│  - postProcessTopics() 后处理（去重、分散未覆盖知识点）                     │
+│  - Fallback: sparkFallbackCluster() 均分降级                             │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 阶段四：卡片生成与输出                                                     │
+│  - generateCardsFromKnowledgePoints(kpArray, config)                     │
+│  - 分批: BATCH_KNOWLEDGE_POINTS_SIZE=30                                  │
+│  - Prompt: BATCH_CARDS_FROM_KNOWLEDGE_POINTS_PROMPT                      │
+│  - 参数: temperature=0.5, max_tokens=min(16384, 4096+kpCount*400)       │
+│  - mergeBatchCardResults() 合并 + kpMarker 全局化                         │
+│  - 过滤空卡片、校验格式                                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           标准化学识卡片库输出                             │
+│  - units: [{ name, cards: [{ kpMarker, knowledge_point, front, back }]}] │
+│  - 每张卡片可追溯对应原始知识点                                             │
+│  - 主题分组合理，单元命名规范                                              │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 六、性能指标
+
+| 指标 | 弱模型（Spark Lite） | 说明 |
+|------|---------------------|------|
+| 单批文本长度 | 3000 字符 | 避免上下文窗口溢出 |
+| 知识点提取速度 | ~500ms/批 | 含网络延迟 |
+| 卡片生成速度 | ~800ms/批 | 30个知识点/批 |
+| 最大重试次数 | 3 次 | 指数退避 |
+| 知识点丢失率 | ≤ 2% | 归类合并后验证 |
+| JSON 解析成功率 | ≥ 95% | 含 markdown 处理 |
+
+---
+
+## 七、潜在优化方向
+
+1. **知识点提取优化**：
+   - 考虑中文分词的语义分割，而非简单的字符分割
+   - 引入主动学习，对低置信度结果进行人工确认
+
+2. **去重算法优化**：
+   - 引入语义向量嵌入，计算余弦相似度
+   - 支持增量去重，避免重复对比已确认知识点
+
+3. **归类合并优化**：
+   - 支持用户干预的半自动归类
+   - 引入主题层级（章-节-单元）结构
+
+4. **卡片生成优化**：
+   - 支持多种卡片模板（问答、填空、选择）
+   - 引入卡片难度评估机制
+
+---
+
+## 八、关联文件
+
+| 文件 | 作用 |
+|------|------|
+| src/services/aiService.js | 核心 AI 服务逻辑，知识点提取/去重/归类/卡片生成 |
+| src/services/iflytekAi.js | 讯飞 Spark 专用实现，含弱模型聚类和降级逻辑 |
+| src/utils/constants.js | Prompt 模板和常量定义 |
+| src/services/testQuestionService.js | 题目生成核心服务（弱模型递进式出题策略） |
+
+---
+
+## 九、弱模型题目生成优化（2026-06-20）
+
+### 9.1 问题背景
+
+39 张卡片仅生成 87 道题（目标 468 道），根因分析：
+
+| 根因 | 影响 | 位置 |
+|------|------|------|
+| `maxFullBatches = 2` | 75% 的卡片只出 2 种题型（单选+判断），缺失多选+填空 | testQuestionService.js L1107 |
+| 任务构造不迭代难度 | 每卡每题型只生成 1 道题，无法覆盖 3 种难度 | testQuestionService.js L1121-1151 |
+| `MAX_QUESTIONS_PER_CARD_TYPE = 1` | 限制每题型题数上限为 1，无法达到 3 道目标 | testQuestionService.js L423 |
+
+### 9.2 优化方案：递进式分阶段生成策略
+
+**策略设计**（替代原 `maxFullBatches` 限制）：
+- 按难度递进分 3 个阶段，每阶段覆盖全部 4 种题型
+- 阶段1（简易 difficulty=1）→ 阶段2（中等 difficulty=2）→ 阶段3（困难 difficulty=3）
+- 每阶段内按 (批次, 题型) 构建任务，使用矩阵精确跳过已出齐的组合
+
+**优点**：
+1. 确保每张卡片每种题型每种难度都有题（4×3=12 道/卡）
+2. 进度可按阶段追踪（33% → 66% → 100%）
+3. 某阶段失败不影响已完成的阶段
+4. 自然优先级：简易 → 中等 → 困难
+
+### 9.3 核心代码变更
+
+#### 9.3.1 常量调整
+```javascript
+// 每张卡片每种题型的总上限 = 3 种难度 × 1 道/难度
+const MAX_QUESTIONS_PER_CARD_TYPE = MAX_QUESTIONS_PER_CARD_TYPE_DIFFICULTY * 3
+```
+
+#### 9.3.2 任务构造（三维迭代）
+```javascript
+// 按 (阶段/难度, 批次, 题型) 三维迭代
+for (let phaseIdx = 0; phaseIdx < allDifficulties.length; phaseIdx++) {
+  const currentDifficulty = allDifficulties[phaseIdx]
+  batches.forEach((batch, batchIdx) => {
+    for (const type of questionTypes) {
+      // 矩阵精确跳过：检查该 batch 内哪些卡片还需要该 (type, difficulty)
+      const allSatisfied = batch.every(card => {
+        const need = matrix.needCombosByCard.get(cid) || []
+        return !need.some(c => c.type === type && c.difficulty === currentDifficulty)
+      })
+      if (allSatisfied) continue
+      tasks.push({ phase: phaseIdx, batchIdx, cardBatch: batch, type, difficulty: currentDifficulty })
+    }
+  })
+}
+```
+
+#### 9.3.3 三级校验机制
+1. **批次内校验**：每批次生成完成后验证题目数量与质量
+2. **题型校验**：所有同类型题目生成完成后进行数量汇总验证
+3. **总体校验**：全部题目生成完成后进行最终数量核对
+
+#### 9.3.4 自动重试机制
+- 失败任务不超过 50% 时自动重试
+- 重试使用相同的 (batch, type, difficulty) 参数
+- 重试结果替换原失败结果
+
+### 9.4 进度监控系统
+
+`progressStats` 对象包含以下维度：
+- `totalTasks / completedTasks / failedTasks`：任务级进度
+- `totalGenerated / totalTarget`：题目级进度
+- `perType`：各题型生成进度（选择题、填空题等）
+- `perDifficulty`：各难度生成进度（简易、中等、困难）
+- `perCard`：每卡片题目生成数量统计
+- `phaseStatus`：各阶段执行状态（pending/running/completed）
+
+`onBatchComplete` 回调增强为：
+```javascript
+{
+  batchIdx, type, difficulty, phase, generated, error,
+  progress: { completed, total, percent, totalGenerated, totalTarget }
+}
+```
+
+### 9.5 多轮补全增强
+
+`updateQuestionBankComplete` 增强：
+- 每轮预检时统计各题型缺失分布
+- 进度报告含各题型缺失明细
+- `roundDetails` 数组记录每轮详细日志（开始时间、耗时、新增数、失败原因）
+- 最终返回含 `existingCount` 和 `roundDetails`
+
+### 9.6 预期效果
+
+| 指标 | 优化前 | 优化后 |
+|------|--------|--------|
+| 39 卡片理论最大题数 | 98 道 | 468 道 |
+| 题型覆盖 | 2-4 种 | 4 种全覆盖 |
+| 难度覆盖 | 1 种 | 3 种全覆盖 |
+| 每卡片题数 | 1-4 道 | 12 道 |
+| 失败恢复 | 无 | 自动重试 |
+| 进度追踪 | 批次级 | 任务/题型/难度/卡片多维 |
+
+### 9.7 强模型同步优化（2026-06-20）
+
+**问题分析**：强模型 `buildStrongModelTasks` 存在与弱模型相同的根因——不迭代难度维度。当 `targetDifficulty=null` 时，任务以 `difficulty: null` 创建，Prompt 不含难度约束，AI 倾向于每卡每题型只出1道题，39卡片预期产量仅~192道。
+
+**优化方案**：与弱模型统一采用递进式分阶段策略
+
+| 修改点 | 优化前 | 优化后 |
+|--------|--------|--------|
+| `buildStrongModelTasks` | 内层循环只检查"是否有任意难度缺失"，创建 `difficulty: null` 任务 | 外层按难度递进迭代，每个难度独立构造 `difficulty: currentDifficulty` 任务 |
+| `generateQuestionsForStrongModel` | 使用传入的 `difficulty` 参数 | 使用 `task.difficulty`（每任务独立难度） |
+| 进度回调 | `onBatchComplete({ batchIdx, types, generated, error })` | 增强：含 `difficulty, progress: { completed, total, percent, totalGenerated, totalTarget }` |
+| 校验机制 | 无 | 三级校验（批次内、题型、总体） |
+| 自动重试 | 无 | 失败≤50%时自动重试 |
+| 返回值 | `questions, totalGenerated, ...` | 新增 `progressStats, validation` |
+
+**39卡片预期产量对比**：
+
+| 指标 | 优化前 | 优化后 |
+|------|--------|--------|
+| 任务数 | 8（4批×2题型组） | 24（3难度×4批×2题型组） |
+| 每任务难度 | null（不指定） | 1/2/3（明确指定） |
+| 理论最大题数 | ~192 道 | **468 道** |
+| 题型覆盖 | 4 种 | 4 种全覆盖 |
+| 难度覆盖 | 1 种（AI 自选） | **3 种全覆盖** |
+
+---
+
+## 十、弱模型跨分类归类优化（2026-06-21）
+
+### 10.1 问题背景
+
+弱模型（讯飞 Spark Lite）在「跨分类 AI 全权归类」（cross-category-auto 模式）场景下存在两大问题：
+
+| 问题 | 现象 | 根因 |
+|------|------|------|
+| 不能将所选卡片归类到另一个分类中 | 跨分类归类时卡片丢失或归入错误分类 | `planCrossCategoryStructure` 和 `assignCardsCrossCategory` 未对弱模型做分批处理，单次请求超出弱模型处理能力 |
+| 不能处理好是否有关联或无关联 | 关联卡片误判、无关联卡片强行归类 | 缺少显式关联检测逻辑，AI 返回不完整时无 fallback |
+
+### 10.2 优化方案：分批处理 + 关联检测 Fallback
+
+#### 10.2.1 弱模型分批规划结构
+
+**新增函数**：`planCrossCategoryStructureWithBatches(cards, config, onProgress)`
+
+```javascript
+// aiService.js:8295
+const WEAK_CROSS_CATEGORY_BATCH_SIZE = 20  // 弱模型跨分类每批最大卡片数
+const MAX_TOKENS_PER_BATCH = 2500           // Token 动态分批阈值
+
+// 触发条件：弱模型 && 卡片数 > 20
+if (isSparkLite && cardCount > WEAK_CROSS_CATEGORY_BATCH_SIZE) {
+  return await planCrossCategoryStructureWithBatches(cards, config, onProgress)
+}
+```
+
+**分批策略**：
+- Token 动态分批：按卡片内容总字符数估算 token，每批不超过 2500 token
+- 每批独立调用 `planCrossCategoryStructure` 生成分类结构
+- 使用 `mergeCrossCategoryBatches` 合并多批结果
+
+#### 10.2.2 批次结果合并
+
+**新增函数**：`mergeCrossCategoryBatches(batchResults)`
+
+**合并算法**：
+1. 收集所有批次的分类
+2. 按语义相似度（阈值 0.3）合并相似分类
+3. 合并章节和单元
+4. 输出统一的分类结构
+
+#### 10.2.3 弱模型分批分配卡片
+
+**新增函数**：`assignCardsCrossCategoryWithBatches(cards, plan, config, onProgress)`
+
+**流程**：
+1. 按 Token 动态分批
+2. 从 plan 初始化结果结构
+3. 每批调用 `assignCardsCrossCategory` 分配卡片
+4. 按分类/章节/单元名称匹配合并批次结果
+5. 对未分配的卡片调用 `assignCardsByAssociation` 进行关联检测 fallback
+
+#### 10.2.4 关联检测 Fallback
+
+**新增函数**：`assignCardsByAssociation(cards, indices, categories)`
+
+**关联检测算法**：
+```
+对每张卡片：
+  1. 计算与每个单元的相似度（simpleTextSimilarity）
+  2. 综合得分 = 单元相似度×0.6 + 章节相似度×0.25 + 分类相似度×0.15
+  3. 提取关键词（extractKeywordsForAssociation）
+  4. 关键词匹配加成 = 匹配数 × 0.1
+  5. 最终得分 = 综合得分 + 关键词加成
+  6. 若最终得分 > 0.05，分配到最佳单元
+  7. 否则，放入默认单元（第一个分类的第一个单元）
+```
+
+**关键词提取**：`extractKeywordsForAssociation(text)`
+- 按标点和空格分词
+- 中文词按 2-6 字滑窗提取
+- 英文词直接保留
+- 去重返回
+
+### 10.3 关联检测 Prompt 增强
+
+在 `planCrossCategoryStructure` 和 `assignCardsCrossCategory` 的 Prompt 中新增「关联性判断」指令：
+
+```
+【关联性判断（必须遵守）】
+1. 卡片与分类的关联：卡片内容必须与分类主题语义相关
+2. 卡片与卡片的关联：同一单元内的卡片应当主题相近
+3. 无关联卡片处理：与所有分类都无关的卡片，归入"未归类"单元
+4. 跨分类关联：卡片可以归入与原分类不同的新分类（只要语义相关）
+```
+
+### 10.4 测试验证
+
+#### 10.4.1 测试脚本
+
+| 脚本 | 位置 | 用途 |
+|------|------|------|
+| `src/utils/testCrossCategoryClassification.js` | 工具模块 | 浏览器端测试，支持本地模拟和真实 AI 调用 |
+| `scripts/test-cross-category-standalone.mjs` | 独立脚本 | Node.js 命令行测试，无需浏览器 |
+
+#### 10.4.2 测试数据
+
+- 60 张卡片，3 个分类（计算机基础/操作系统/计算机网络）
+- 每张卡片标注 expectedCategory/expectedChapter/expectedUnit
+- 含 3 张无关联卡片用于测试无关联处理
+
+#### 10.4.3 本地分类器优化
+
+**问题**：短关键词（如"进制"）作为长关键词（如"二进制"）的子串被重复计分，导致误分类。
+
+**修复**：采用「最长匹配优先」策略
+```javascript
+function calculateKeywordScore(text, keywords, weight) {
+  // 1. 按长度降序排序关键词
+  const sortedKeywords = [...keywords].sort((a, b) => b.length - a.length)
+  // 2. 匹配后用空格替换，避免子串重复计分
+  let tempText = text
+  for (const kw of sortedKeywords) {
+    while (tempText.includes(kwLower)) {
+      score += kw.length * weight
+      tempText = tempText.replace(kwLower, ' '.repeat(kwLower.length))
+    }
+  }
+}
+```
+
+#### 10.4.4 测试结果
+
+| 测试项 | 修复前 | 修复后 |
+|--------|--------|--------|
+| 测试1 基础分类 | 4/5 PASS | **5/5 PASS** |
+| 测试2 打乱分类 | PASS | PASS |
+| 测试3 5轮稳定性 | PASS | PASS |
+| 测试4 关联检测 | **FAIL**（59/60） | **PASS**（60/60） |
+| 测试5 无关联处理 | PASS | PASS |
+| 分类准确率 | 98.3% | **100%** |
+| 单元准确率 | 93.3% | 93.3% |
+
+### 10.5 管理界面集成
+
+在 `AdminPanel.jsx` 新增「🔀 跨分类归类测试」Tab：
+- 测试模式选择：本地模拟 / 真实 AI 调用 / 两者对比
+- 打乱轮次选择：1/2/3 轮
+- 实时日志收集（过滤 planCrossCategory、assignCardsCrossCategory、assignCardsByAssociation 等关键字）
+- 汇总结果展示（通过率、平均准确率、平均耗时）
+- 可展开的详细结果卡片
+
+### 10.6 关联文件
+
+| 文件 | 作用 |
+|------|------|
+| `src/services/aiService.js` | 跨分类归类核心逻辑（分批+关联检测） |
+| `src/utils/testCrossCategoryClassification.js` | 浏览器端测试工具 |
+| `scripts/test-cross-category-standalone.mjs` | 独立命令行测试脚本（60张卡片，3分类） |
+| `scripts/test-cross-category-v2.mjs` | 真实数据测试脚本（90张卡片，2分类，本地关键词分类器） |
+| `scripts/test-cross-category-ai.mjs` | AI真实分类测试脚本（90张卡片，直接调用Spark Lite API） |
+| `src/pages/AdminPanel.jsx` | 管理界面测试面板 |
+
+---
+
+## 十一、AI 真实分类测试与关键词分类对比（2026-06-21）
+
+### 11.1 背景与问题
+
+用户质疑关键词分类方案的局限性：
+- "是在通过关键词进行分类？"
+- "如果不是这个专业的，跟这些都无关该怎么办？"
+- "这些关键词能由ai进行生成么？"
+
+### 11.2 两种分类方案对比
+
+| 方案 | 本地关键词分类 | AI 语义分类 |
+|------|--------------|------------|
+| 实现位置 | `scripts/test-cross-category-v2.mjs` | `scripts/test-cross-category-ai.mjs` |
+| 实际应用 | 仅用于快速验证逻辑 | `aiService.js` 的 `planCrossCategoryStructure` + `assignCardsCrossCategory` |
+| 分类依据 | 硬编码关键词 + 最长匹配优先算法 | AI 语义理解（不依赖任何关键词） |
+| 适用领域 | 仅限预定义关键词的领域 | 任何专业领域（医学、法律、英语、政治等） |
+| 速度 | 毫秒级 | 秒级（依赖AI响应） |
+| 准确率 | 高（关键词匹配精确） | 取决于模型能力 |
+| Token消耗 | 无 | 有 |
+
+### 11.3 AI 真实分类测试结果（Spark Lite 弱模型）
+
+测试数据：90 张真实卡片（计算机基础 40 + 高等数学 50）
+
+| 指标 | 本地关键词分类 | AI 真实分类（Spark Lite） |
+|------|--------------|------------------------|
+| 分类覆盖率 | 100% | 52.2%（有未分配卡片） |
+| 分类准确率 | 100% | 44.4% |
+| 章节准确率 | 100% | 0.0% |
+| 单元准确率 | 97.8% | 0.0% |
+| 耗时 | 毫秒级 | 34s（Step1: 8.4s + Step2: 25.5s） |
+
+### 11.4 Spark Lite 弱模型的问题
+
+1. **分类过于碎片化**：AI 创建了 7 个分类（预期 2 个），把每张卡片都当成一个分类
+2. **单元名是模板文字**：AI 返回的单元名是"单元名称"（模板文字），没有实际命名
+3. **卡片遗漏多**：43 张卡片未分配（占 47.8%），说明 AI 分配时遗漏了很多
+4. **输出被截断**：Spark Lite 的 max_tokens=4096 不够，需要分批处理和截断 JSON 修复
+
+### 11.5 关键结论
+
+1. **AI 语义分类不依赖关键词**：AI 完全通过语义理解分类，能处理任何专业领域
+2. **Spark Lite 准确率低**：弱模型能理解语义但不擅长结构化输出，实际应用应用强模型（DeepSeek/Qwen）
+3. **本地关键词分类仅用于测试**：实际应用中走 AI 语义分类，不依赖硬编码关键词
+4. **两者互补**：
+   - 本地关键词分类：快速验证逻辑流程，不消耗 token
+   - AI 真实分类：实际应用，处理任何领域，但需要强模型支持
+
+### 11.6 实际应用中的 AI 分类流程
+
+实际应用中（`aiService.js`），跨分类归类走以下流程：
+
+1. **`planCrossCategoryStructure`**（[aiService.js#L8306](file:///c:/creategame/Quick%20Note%20Memorization%20Specialized%20for%20Postgraduate%20Entrance%20Exam/ai-flashcard-app/src/services/aiService.js#L8306)）：
+   - AI 根据卡片内容动态创建分类/章节/单元结构
+   - 弱模型分批处理（`WEAK_CROSS_CATEGORY_BATCH_SIZE = 20`）
+   - 不依赖任何硬编码关键词
+
+2. **`assignCardsCrossCategory`**（[aiService.js#L9347](file:///c:/creategame/Quick%20Note%20Memorization%20Specialized%20for%20Postgraduate%20Entrance%20Exam/ai-flashcard-app/src/services/aiService.js#L9347)）：
+   - AI 将每张卡片分配到最合适的分类→章节→单元
+   - 弱模型分批处理
+   - 结构一致性校验（`checkCrossCategoryStructureConsistency`）
+   - 关联检测兜底（`assignCardsByAssociation`）
+
+3. **模型选择**：
+   - Spark Lite（弱模型）：免费但准确率低，适合简单场景
+   - DeepSeek/Qwen（强模型）：准确率高，适合复杂分类
+   - 用户可在设置中选择 AI 服务提供商和模型
+
+### 11.7 Spark Lite 准确率优化尝试与最终结论（2026-06-21）
+
+针对 Spark Lite 准确率低的问题，尝试了两种优化方案：
+
+#### 11.7.1 优化方案1：多轮对话策略 + 分批处理优化
+
+**方案设计**：
+- 把复杂任务拆分成3轮简单任务
+  - Round 1: 分类规划 + 卡片分配到分类（只返回分类名）
+  - Round 2: 每个分类内规划章节 + 卡片分配到章节
+  - Round 3: 每个章节内规划单元 + 卡片分配到单元
+- 分批处理：每批20张卡片（与 aiService.js 的 WEAK_CROSS_CATEGORY_BATCH_SIZE 一致）
+
+**测试结果**：
+
+| 指标 | 优化前（单轮+40张/批） | 优化后（3轮+20张/批） |
+|------|---------------------|---------------------|
+| 分类覆盖率 | 52.2% | 31.1% ❌ |
+| 分类准确率 | 44.4% | 31.1% ❌ |
+| 单元准确率 | 0.0% | 0.0% ❌ |
+| 耗时 | 34s | 95.2s ❌ |
+
+**优化后反而更差的原因**：
+1. **分类碎片化更严重**：Round 1 创建了"计算机基础"、"计算机应用"、"计算机安全"3个分类，但后两个应该是"计算机基础"的子主题
+2. **章节过于碎片化**：Round 2 在"计算机应用"下创建了13个章节，每个只有1-2张卡片
+3. **卡片丢失更多**：62张未分配（68.9%），多轮对话每轮都可能丢失卡片
+4. **耗时翻倍**：3轮对话需要更多 AI 调用
+
+#### 11.7.2 最终结论：Spark Lite 不适合跨分类归类
+
+**根本原因**：Spark Lite 是弱模型，能力上限有限，无论怎么优化 prompt 都无法解决以下核心问题：
+1. **分类粒度控制差**：倾向于把每张卡片当成一个分类/章节
+2. **结构化输出能力弱**：无法生成规范的3级分类结构
+3. **指令遵循能力弱**：即使明确要求"不要把每张卡片当成分类"，仍然会这样做
+4. **多轮对话累积误差**：每轮都可能丢失卡片，多轮后丢失更严重
+
+#### 11.7.3 推荐解决方案
+
+| 方案 | 适用场景 | 准确率 | 成本 |
+|------|--------|-------|-----|
+| **强模型（DeepSeek/Qwen）** | 实际应用 | 预期 80%+ | 付费 |
+| **本地关键词分类** | 已知领域测试 | 97.8% | 免费 |
+| **Spark Lite** | 不推荐 | 31-44% | 免费 |
+
+**建议**：
+1. **实际应用**：使用强模型（DeepSeek/Qwen），在设置中选择对应 AI 服务提供商
+2. **快速测试**：使用本地关键词分类（`test-cross-category-v2.mjs`），97.8% 准确率
+3. **Spark Lite**：仅用于简单场景（如单分类内的小批量卡片归类），不适合跨分类归类
+
+---
+
+**报告生成时间**：2026-06-18
+**更新记录**：
+- 2026-06-18: 初始版本，涵盖四阶段完整工作流程
+- 2026-06-20: 新增第九章「弱模型题目生成优化」，涵盖递进式分阶段策略、三级校验、自动重试、进度监控
+- 2026-06-20: 9.7 节新增强模型同步优化，统一采用递进式分阶段策略
+- 2026-06-21: 新增第十章「弱模型跨分类归类优化」，涵盖分批处理、关联检测 fallback、最长匹配优先分类器、测试脚本与管理界面集成
+- 2026-06-21: 新增第十一章「AI 真实分类测试与关键词分类对比」，涵盖两种方案对比、Spark Lite 测试结果、实际应用流程
+- 2026-06-21: 新增 11.7 节「Spark Lite 准确率优化尝试与最终结论」，记录多轮对话策略优化尝试（反而更差）及最终建议：Spark Lite 不适合跨分类归类，推荐使用强模型
+- 2026-06-21: 取消弱模型跨分类归类功能：在 classifyCrossCategoryAuto 入口添加弱模型检测（抛出明确错误），移除 planCrossCategoryStructureWithBatches、assignCardsCrossCategoryWithBatches、mergeCrossCategoryBatches 三个弱模型分批处理函数及 WEAK_CROSS_CATEGORY_BATCH_SIZE 常量，更新 AdminPanel 测试面板提示
+- 2026-06-23: 新增第十二章「弱模型知识点分类输出格式优化（JSON→分组线性表）」，将 classifyCardsByKnowledgePoints 和 classifyCardsByKnowledgePointsMultiRound 两个函数的 AI 输出格式从 JSON 改为分组线性表，解析逻辑改为线性表优先、JSON 兜底
+
+---
+
+## 十二、弱模型知识点分类输出格式优化（2026-06-23）
+
+### 12.1 问题背景
+
+弱模型（讯飞 Spark Lite）在知识点归类阶段（路径A多轮分类、路径B两轮分类）使用 JSON 数组作为 AI 输出格式。弱模型结构化输出能力弱，常出现 JSON 格式错误（引号缺失、括号不匹配、多余文字等），导致解析失败回退到本地降级分类，影响归类质量。
+
+### 12.2 优化方案：分组线性表格式
+
+将 AI 输出格式从 JSON 数组改为「分组线性表」（pipe 分隔的纯文本），降低弱模型格式出错概率。解析逻辑改为「线性表优先，JSON 兜底」，确保向后兼容。
+
+### 12.3 涉及函数
+
+| 函数 | 路径 | 位置 | 说明 |
+|------|------|------|------|
+| `classifyCardsByKnowledgePoints` | 路径B | aiService.js ~L5891 | 弱模型两轮分类（chapter-and-unit / unit-only 两种深度模式） |
+| `classifyCardsByKnowledgePointsMultiRound` | 路径A | aiService.js ~L6267 | 弱模型多轮分类（第一轮章节级 + 第二轮单元级） |
+
+### 12.4 新增解析函数
+
+在 `parseLinearNewAssignResult` 函数后面新增两个解析函数：
+
+#### 12.4.1 parseLinearKpResult(raw, depth)
+用于路径B（classifyCardsByKnowledgePoints），支持两种深度模式：
+
+| depth | 格式（归入现有） | 格式（创建新） | 返回对象 |
+|-------|-----------------|---------------|---------|
+| chapter-and-unit | `index\|E\|chapterIndex\|unitName` | `index\|N\|newChapterName\|unitName` | `{index, chapterIndex, unitName, isNew}` 或 `{index, chapterIndex:null, unitName, isNew:true, newChapterName}` |
+| unit-only | `index\|E\|unitName` | `index\|N\|unitName` | `{index, unitName, isNew}` |
+
+#### 12.4.2 parseLinearKpMultiRoundResult(raw, round)
+用于路径A（classifyCardsByKnowledgePointsMultiRound）：
+
+| round | 格式（归入现有） | 格式（创建新） | 返回对象 |
+|-------|-----------------|---------------|---------|
+| 1（章节级） | `cardIndex\|E\|chapterIndex` | `cardIndex\|N\|newChapterName` | `{cardIndex, chapterIndex, isNew:false}` 或 `{cardIndex, chapterIndex:null, isNew:true, newChapterName}` |
+| 2（单元级） | `cardIndex\|E\|unitIndex` | `cardIndex\|N\|newUnitName` | `{cardIndex, unitIndex, isNew:false}` 或 `{cardIndex, unitIndex:null, isNew:true, newUnitName}` |
+
+### 12.5 解析逻辑（线性表优先，JSON 兜底）
+
+所有解析点统一采用以下模式：
+```javascript
+// 优先尝试线性表解析
+const linearResult = parseLinearXxxResult(raw, depth/round)
+if (linearResult) {
+  assignments = linearResult
+} else {
+  console.log('[xxx] 线性表解析失败，回退到JSON解析')
+  // 原有 JSON 解析逻辑（提取 [ 到 ] 之间内容用 JSON.parse）
+}
+```
+
+### 12.6 修改的解析点
+
+| 解析点 | 函数 | 位置 | 解析函数调用 |
+|--------|------|------|-------------|
+| parseAiResponse | classifyCardsByKnowledgePoints | ~L6003 | `parseLinearKpResult(raw, classificationDepth)` |
+| Round1 解析 | classifyCardsByKnowledgePointsMultiRound | ~L6361 | `parseLinearKpMultiRoundResult(raw, 1)` |
+| Round2 解析 | classifyCardsByKnowledgePointsMultiRound | ~L6518 | `parseLinearKpMultiRoundResult(raw, 2)` |
+
+### 12.7 向后兼容
+
+- AI 返回线性表格式：线性表解析成功，直接使用
+- AI 返回 JSON 格式：线性表解析失败（无 `|` 分隔行或格式不符），自动回退到 JSON 解析
+- 两种格式都能正常解析，不影响已有行为
+
+### 12.8 关联文件
+
+| 文件 | 作用 |
+|------|------|
+| `src/services/aiService.js` | 新增 parseLinearKpResult、parseLinearKpMultiRoundResult 解析函数；修改两个分类函数的 Prompt 和解析逻辑 |

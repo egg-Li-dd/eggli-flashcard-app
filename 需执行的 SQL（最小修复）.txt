@@ -1,0 +1,115 @@
+-- ========================================================================
+-- 最小修复脚本：解决 diagnostic_view 42P16 错误
+-- 适用场景：执行需执行的 SQL（更新版）时 42P16: cannot drop columns from view
+-- 执行方式：在 Supabase SQL Editor 中**单独**完整执行一次
+-- 更新日期：2026-06-15
+-- ========================================================================
+-- 注意：此脚本是兜底修复，只处理 diagnostic_view，不动其它表/视图。
+--       执行成功后，可再跑一遍需执行的 SQL（更新版）.txt 验证。
+-- ========================================================================
+
+-- ============================================================
+-- 1. 强力删除 diagnostic_view（多重兜底）
+--    优先 DROP VIEW CASCADE
+--    失败时 RENAME 改名
+--    再失败时 REVOKE 权限后再 DROP
+--    最后兜底是 DO 块 + RAISE NOTICE 让用户看到内部异常
+-- ============================================================
+DO $$
+DECLARE
+    err_msg text;
+BEGIN
+    -- 第 1 次尝试：直接 DROP CASCADE
+    BEGIN
+        EXECUTE 'DROP VIEW IF EXISTS public.diagnostic_view CASCADE';
+        RAISE NOTICE '[第 1 步] DROP VIEW CASCADE 成功';
+    EXCEPTION WHEN OTHERS THEN
+        err_msg := SQLERRM;
+        RAISE NOTICE '[第 1 步失败] DROP VIEW CASCADE 失败: %', err_msg;
+
+        -- 第 2 次尝试：RENAME 改名
+        BEGIN
+            EXECUTE 'ALTER VIEW IF EXISTS public.diagnostic_view RENAME TO diagnostic_view_obsolete_' || extract(epoch from now())::bigint;
+            RAISE NOTICE '[第 2 步] RENAME 成功';
+        EXCEPTION WHEN OTHERS THEN
+            err_msg := SQLERRM;
+            RAISE NOTICE '[第 2 步失败] RENAME 失败: %', err_msg;
+
+            -- 第 3 次尝试：REVOKE 权限后 DROP
+            BEGIN
+                EXECUTE 'REVOKE ALL ON public.diagnostic_view FROM PUBLIC';
+                EXECUTE 'DROP VIEW IF EXISTS public.diagnostic_view';
+                RAISE NOTICE '[第 3 步] REVOKE+DROP 成功';
+            EXCEPTION WHEN OTHERS THEN
+                err_msg := SQLERRM;
+                RAISE NOTICE '[第 3 步失败] REVOKE+DROP 失败: %', err_msg;
+                RAISE NOTICE '请手动在 Supabase 后台重置视图或联系管理员';
+            END;
+        END;
+    END;
+END $$;
+
+-- ============================================================
+-- 2. 重建 diagnostic_view（14 列最终版）
+--    用 CREATE VIEW 不是 CREATE OR REPLACE VIEW
+-- ============================================================
+CREATE VIEW public.diagnostic_view AS
+SELECT
+    u.id AS user_id,
+    u.email,
+    (SELECT COUNT(*) FROM public.categories c WHERE c.user_id = u.id) AS category_count,
+    (SELECT COUNT(*) FROM public.units u2 WHERE u2.user_id = u.id) AS unit_count,
+    (SELECT COUNT(*) FROM public.cards c2 WHERE c2.user_id = u.id) AS card_count,
+    (SELECT COUNT(*) FROM public.card_status cs WHERE cs.user_id = u.id AND cs.status = 'mastered') AS mastered_count,
+    (SELECT COUNT(*) FROM public.card_status cs WHERE cs.user_id = u.id AND cs.status = 'review') AS review_count,
+    (SELECT COUNT(*) FROM public.bookmarks b WHERE b.user_id = u.id) AS bookmark_count,
+    (SELECT COUNT(*) FROM public.wrong_answers w WHERE w.user_id = u.id) AS wrong_answers_count,
+    (SELECT COUNT(*) FROM public.user_profiles p WHERE p.user_id::uuid = u.id) AS profile_count,
+    (SELECT COUNT(*) FROM public.user_settings s WHERE s.user_id = u.id) AS settings_count,
+    (SELECT COUNT(*) FROM public.test_questions tq WHERE tq.user_id = u.id) AS test_questions_count,
+    (SELECT COUNT(*) FROM public.test_records tr WHERE tr.user_id = u.id) AS test_records_count,
+    (SELECT COUNT(*) FROM public.test_sessions ts WHERE ts.user_id = u.id) AS test_sessions_count
+FROM auth.users u;
+
+-- ============================================================
+-- 3. v3.8 新增：test_sessions 表的 unit_id / category_id 两列与索引
+--    独立可重入：单独执行也不影响其它表
+--    关键：先 ADD COLUMN 再 CREATE INDEX，避免 42703 (column does not exist)
+--    用 DO 块判断列是否存在，再决定是否建索引，最稳
+-- ============================================================
+DO $$
+BEGIN
+    -- 1) 添加 unit_id 列（若不存在）
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'test_sessions' AND column_name = 'unit_id'
+    ) THEN
+        ALTER TABLE public.test_sessions ADD COLUMN unit_id text;
+        RAISE NOTICE '[v3.8] 已添加 test_sessions.unit_id 列';
+    ELSE
+        RAISE NOTICE '[v3.8] test_sessions.unit_id 列已存在，跳过';
+    END IF;
+
+    -- 2) 添加 category_id 列（若不存在）
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'test_sessions' AND column_name = 'category_id'
+    ) THEN
+        ALTER TABLE public.test_sessions ADD COLUMN category_id text;
+        RAISE NOTICE '[v3.8] 已添加 test_sessions.category_id 列';
+    ELSE
+        RAISE NOTICE '[v3.8] test_sessions.category_id 列已存在，跳过';
+    END IF;
+END $$;
+
+-- 3) 建索引（在列已存在的前提下，IF NOT EXISTS 不会报 42703）
+CREATE INDEX IF NOT EXISTS test_sessions_unit_id_idx ON public.test_sessions (unit_id);
+CREATE INDEX IF NOT EXISTS test_sessions_category_id_idx ON public.test_sessions (category_id);
+
+-- ============================================================
+-- 4. 验证（手动执行）
+-- ============================================================
+-- SELECT column_name, data_type FROM information_schema.columns
+-- WHERE table_schema = 'public' AND table_name = 'test_sessions'
+--   AND column_name IN ('unit_id', 'category_id');
+-- SELECT * FROM public.diagnostic_view LIMIT 1;

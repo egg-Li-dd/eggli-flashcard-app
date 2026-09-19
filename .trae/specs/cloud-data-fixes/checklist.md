@@ -1,0 +1,11 @@
+- [ ] Checkpoint 1（AC-1）: 云端数据总数正确显示，categories/units/cards/card_status/bookmarks 五表显示值均等于 Supabase 实际记录数（非 0）
+- [ ] Checkpoint 2（AC-2）: 云端分类数据详情页中每条记录的名称显示正确（显示"数学"、"计算机"等用户输入的 name/title，而非 `#id` 或空值）
+- [ ] Checkpoint 3（AC-2）: 单元数据详情页中 title/name 字段正确显示（不依赖 categories 修复）
+- [ ] Checkpoint 4（AC-3）: 筛选面板中显示"已有云端数据"、"云端未更新"、"已下载"、"未下载" 4 个选项，原"已更新"、"未更新"文字已被替换
+- [ ] Checkpoint 5（AC-3）: "已下载"筛选能正确筛选出本地数据库中有相同 id 的记录；"未下载"反之
+- [ ] Checkpoint 6（AC-4）: 云端数据详情页每条记录操作区有"下载到本地"按钮
+- [ ] Checkpoint 7（AC-4）: 点击"下载到本地"按钮后，本地数据库中能查到该记录（Dexie 对应表）
+- [ ] Checkpoint 8（AC-4）: 点击"下载到本地"后 Toast 成功消息显示
+- [ ] Checkpoint 9（NFR-1）: 所有修改在移动端（Capacitor/Android）和浏览器环境下均正常工作
+- [ ] Checkpoint 10（NFR-2）: 界面风格（按钮、布局、颜色）与现有界面保持一致
+- [ ] Checkpoint 11（NFR-3）: npm run build 构建成功无错误

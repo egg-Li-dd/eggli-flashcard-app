@@ -1,0 +1,706 @@
+/* 背诵计划页面样式 */
+
+.study-plan-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  box-sizing: border-box;
+  background: var(--color-bg);
+  overflow: hidden;
+}
+
+/* 顶部导航 */
+.plan-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border-light);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  flex-shrink: 0;
+}
+
+.back-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  cursor: pointer;
+  border-radius: 50%;
+  color: var(--color-text);
+}
+
+.back-btn:hover {
+  background: var(--color-bg-offset);
+}
+
+.plan-title {
+  flex: 1;
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  text-align: center;
+  color: var(--color-text);
+}
+
+/* 同步指示器 */
+.sync-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-radius: 12px;
+}
+
+.sync-indicator:hover {
+  background: var(--color-bg-offset);
+}
+
+.sync-indicator:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.sync-icon {
+  font-size: 12px;
+}
+
+.sync-icon.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 仅本地数据警告条 */
+.local-only-warning {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+  padding: 12px 16px;
+  font-size: 13px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.local-only-warning p {
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: var(--color-warning-dark);
+}
+
+/* 主视图 Tab */
+.main-tabs {
+  display: flex;
+  background: var(--color-surface);
+  padding: 0 16px;
+  border-bottom: 1px solid var(--color-border-light);
+  flex-shrink: 0;
+}
+
+.main-tab {
+  flex: 1;
+  padding: 12px;
+  border: none;
+  background: transparent;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+}
+
+.main-tab.active {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+/* 背诵模式 Tab */
+.mode-tabs {
+  display: flex;
+  overflow-x: auto;
+  background: var(--color-surface);
+  padding: 8px 16px;
+  gap: 8px;
+  -webkit-overflow-scrolling: touch;
+  flex-shrink: 0;
+}
+
+.mode-tab {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.mode-tab.active {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+}
+
+/* 内容区域 */
+.plan-content {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px;
+  min-height: 0;
+}
+
+/* 今日计划视图 */
+.plan-today-view {
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 今日汇总 */
+.today-summary {
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+.summary-title {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  margin-bottom: 8px;
+}
+
+.summary-stat {
+  display: inline-block;
+  margin: 0 16px;
+}
+
+.summary-stat.large .stat-num {
+  font-size: 48px;
+  font-weight: 700;
+  color: var(--color-danger);
+}
+
+.stat-num {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.stat-num.due {
+  color: var(--color-danger);
+}
+
+.stat-desc {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* 模式汇总卡片网格 */
+.mode-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.mode-summary-card {
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.mode-summary-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.mode-icon {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+
+.mode-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+  margin-bottom: 4px;
+}
+
+.mode-stats {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.sync-badge {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+.sync-badge.synced {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.sync-badge.local {
+  background: var(--color-bg-offset);
+  color: var(--color-text-muted);
+}
+
+/* 分类卡片 */
+.category-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.category-card {
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.category-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.category-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.category-name {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.mode-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+}
+
+.mode-badge.ebbinghaus {
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+}
+
+.category-stats {
+  display: flex;
+  justify-content: space-around;
+  margin-bottom: 12px;
+}
+
+.stat-item {
+  text-align: center;
+}
+
+.stat-item .stat-value {
+  display: block;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.stat-item.due .stat-value {
+  color: var(--color-danger);
+}
+
+.stat-item .stat-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.category-progress-bar {
+  height: 6px;
+  background: var(--color-bg-offset);
+  border-radius: 3px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.category-progress-bar.large {
+  height: 10px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary), var(--color-success));
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.start-review-btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  background: var(--color-primary);
+  color: white;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.start-review-btn:hover {
+  background: var(--color-primary-dark);
+}
+
+.start-review-btn.large {
+  padding: 16px;
+  font-size: 16px;
+}
+
+/* 模式 Header */
+.mode-header {
+  margin-bottom: 16px;
+}
+
+.mode-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+  color: var(--color-text);
+}
+
+.mode-desc {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+/* 进度卡片 */
+.progress-card {
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.progress-text {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.progress-percent {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+/* 薄弱卡片视图 */
+.weak-summary {
+  text-align: center;
+  padding: 24px;
+  background: var(--color-surface);
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+
+.weak-count {
+  display: block;
+  font-size: 48px;
+  font-weight: 700;
+  color: var(--color-danger);
+}
+
+.weak-label {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+/* 未来预测视图 */
+.plan-future-view {
+  animation: fadeIn 0.2s ease;
+}
+
+.future-bar-chart {
+  display: flex;
+  justify-content: space-around;
+  align-items: flex-end;
+  height: 200px;
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.bar-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+}
+
+.bar {
+  width: 30px;
+  background: linear-gradient(180deg, var(--color-primary), var(--color-success));
+  border-radius: 4px 4px 0 0;
+  display: flex;
+  justify-content: center;
+  transition: height 0.3s ease;
+  position: relative;
+}
+
+.bar.over-limit {
+  background: linear-gradient(180deg, var(--color-danger), var(--color-danger-dark));
+}
+
+.bar-value {
+  position: absolute;
+  top: -20px;
+  font-size: 11px;
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.bar-label {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.future-note {
+  background: var(--color-warning-light);
+  color: var(--color-warning);
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-top: 16px;
+}
+
+.over-limit-warning {
+  background: var(--color-danger-light);
+  color: var(--color-danger);
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.completion-estimate, .weak-trend {
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.completion-estimate p, .weak-trend p {
+  margin: 0 0 8px 0;
+  color: var(--color-text-secondary);
+}
+
+.note {
+  font-size: 13px;
+  color: var(--color-text-muted) !important;
+}
+
+/* 学习分析视图 */
+.plan-analysis-view {
+  animation: fadeIn 0.2s ease;
+}
+
+.analysis-section {
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+.analysis-section h3 {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  margin: 0 0 16px 0;
+}
+
+.donut-chart {
+  position: relative;
+  width: 160px;
+  height: 160px;
+  margin: 0 auto;
+}
+
+.donut-chart svg {
+  transform: rotate(-90deg);
+}
+
+.donut-center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+}
+
+.donut-total {
+  display: block;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.donut-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.stage-legend {
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.legend-item:not(:last-child) {
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.legend-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  margin-right: 12px;
+}
+
+.legend-label {
+  flex: 1;
+  font-size: 14px;
+  color: var(--color-text);
+}
+
+.legend-count {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.mastery-summary {
+  text-align: center;
+  padding: 24px;
+  background: var(--color-surface);
+  border-radius: 12px;
+}
+
+.mastery-percent {
+  display: block;
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--color-success);
+}
+
+.mastery-label {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}
+
+.category-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.progress-item {
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.progress-bar-bg {
+  height: 8px;
+  background: var(--color-bg-offset);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary), var(--color-success));
+  border-radius: 4px;
+}
+
+.weak-tip {
+  background: var(--color-surface);
+  border-radius: 12px;
+  padding: 16px;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+/* 加载状态 */
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 50vh;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--color-bg-offset);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+/* 响应式 */
+@media (max-width: 375px) {
+  .plan-header {
+    padding: 10px 12px;
+  }
+
+  .plan-title {
+    font-size: 16px;
+  }
+
+  .plan-content {
+    padding: 12px;
+  }
+
+  .category-stats {
+    flex-wrap: wrap;
+  }
+}

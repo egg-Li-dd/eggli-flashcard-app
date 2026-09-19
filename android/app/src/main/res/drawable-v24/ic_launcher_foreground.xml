@@ -1,0 +1,32 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportHeight="108"
+    android:viewportWidth="108">
+    <!-- 简约的"AI背诵卡片"图标 -->
+    <!-- 左侧：一张卡片 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,30 L50,30 L50,78 L30,78 Z"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2" />
+    <!-- 卡片顶部横线 -->
+    <path
+        android:fillColor="#93C5FD"
+        android:pathData="M34,40 L46,40 L46,44 L34,44 Z" />
+    <!-- 卡片中间横线 -->
+    <path
+        android:fillColor="#BFDBFE"
+        android:pathData="M34,50 L46,50 L46,52 L34,52 Z" />
+    <!-- 卡片底部横线 -->
+    <path
+        android:fillColor="#BFDBFE"
+        android:pathData="M34,58 L46,58 L46,60 L34,60 Z" />
+    
+    <!-- 右侧：简约的大脑/AI图标 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M58,35 C58,35 62,32 68,32 C74,32 78,35 78,35 C78,35 82,38 82,45 C82,52 78,55 78,55 L78,60 L70,60 L70,55 C70,55 66,58 62,58 C58,58 54,55 54,55 L54,60 L50,60 L50,55 C50,55 46,52 46,45 C46,38 50,35 50,35 C50,35 54,32 58,35 Z
+        M62,42 C64.2,42 66,43.8 66,46 C66,47.5 65.2,48.8 64,49.5 L64,55 L60,55 L60,49.5 C58.8,48.8 58,47.5 58,46 C58,43.8 59.8,42 62,42 Z
+        M70,45 C72,45 73.5,46.5 73.5,48.5 C73.5,50 72.8,51.2 71.8,52 L71.8,55 L68.2,55 L68.2,52 C67.2,51.2 66.5,50 66.5,48.5 C66.5,46.5 68,45 70,45 Z" />
+</vector>

@@ -1,0 +1,108 @@
+-- ========================================================================
+-- iOS Native 功能对齐 - SQL 增量更新
+-- 日期：2026-07-07
+-- 对比基准：我在SQL editor执行的命令.txt（CloudBase PostgreSQL）
+-- ========================================================================
+
+-- ------------------------------------------------------------------------
+-- 变更 1：test_sessions 表新增 score 和 completed_at 列
+-- 原因：对齐 iOS TestSession 模型（score, completedAt 字段）
+-- ------------------------------------------------------------------------
+ALTER TABLE test_sessions ADD COLUMN IF NOT EXISTS score INTEGER;
+ALTER TABLE test_sessions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+
+-- ------------------------------------------------------------------------
+-- 变更 2：cards 表修正默认类型
+-- 原因：原 web app 使用 "normal" 作为默认，iOS 之前错误使用 "basic"
+-- ------------------------------------------------------------------------
+ALTER TABLE cards ALTER COLUMN type SET DEFAULT 'normal';
+
+-- ------------------------------------------------------------------------
+-- 变更 3：新增 ocr_cache 表
+-- 原因：OCR 结果缓存，避免重复识别相同图片
+-- ------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ocr_cache (
+  id TEXT PRIMARY KEY,
+  image_hash TEXT NOT NULL UNIQUE,
+  recognized_text TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ocr_cache_image_hash ON ocr_cache(image_hash);
+
+ALTER TABLE ocr_cache ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS ocr_cache_select ON ocr_cache;
+DROP POLICY IF EXISTS ocr_cache_insert ON ocr_cache;
+DROP POLICY IF EXISTS ocr_cache_update ON ocr_cache;
+DROP POLICY IF EXISTS ocr_cache_delete ON ocr_cache;
+CREATE POLICY ocr_cache_select ON ocr_cache FOR SELECT TO authenticated USING (true);
+CREATE POLICY ocr_cache_insert ON ocr_cache FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY ocr_cache_update ON ocr_cache FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+CREATE POLICY ocr_cache_delete ON ocr_cache FOR DELETE TO authenticated USING (true);
+
+-- ------------------------------------------------------------------------
+-- 变更 4：新增 ai_call_logs 表
+-- 原因：记录每次 AI API 调用，用于调试和统计
+-- ------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ai_call_logs (
+  id TEXT PRIMARY KEY,
+  timestamp TIMESTAMPTZ DEFAULT NOW(),
+  provider TEXT NOT NULL,
+  model TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  latency_ms INTEGER,
+  success BOOLEAN DEFAULT FALSE,
+  error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_call_logs_timestamp ON ai_call_logs(timestamp);
+CREATE INDEX IF NOT EXISTS idx_ai_call_logs_provider ON ai_call_logs(provider);
+
+ALTER TABLE ai_call_logs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS ai_call_logs_select ON ai_call_logs;
+DROP POLICY IF EXISTS ai_call_logs_insert ON ai_call_logs;
+DROP POLICY IF EXISTS ai_call_logs_update ON ai_call_logs;
+DROP POLICY IF EXISTS ai_call_logs_delete ON ai_call_logs;
+CREATE POLICY ai_call_logs_select ON ai_call_logs FOR SELECT TO authenticated USING (true);
+CREATE POLICY ai_call_logs_insert ON ai_call_logs FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY ai_call_logs_update ON ai_call_logs FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+CREATE POLICY ai_call_logs_delete ON ai_call_logs FOR DELETE TO authenticated USING (true);
+
+-- ------------------------------------------------------------------------
+-- 变更 5：新增 drafts 表（如尚未创建）
+-- 原因：草稿工作流，支持悬浮窗录入和 AI 生成卡片
+-- ------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS drafts (
+  id TEXT PRIMARY KEY,
+  content TEXT NOT NULL,
+  category_id TEXT,
+  chapter_id TEXT,
+  unit_id TEXT,
+  source TEXT DEFAULT 'floating',
+  template_type TEXT,
+  status TEXT DEFAULT 'pending',
+  retry_count INTEGER DEFAULT 0,
+  error_message TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  generated_at TIMESTAMPTZ,
+  user_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_drafts_category_id ON drafts(category_id);
+CREATE INDEX IF NOT EXISTS idx_drafts_status ON drafts(status);
+CREATE INDEX IF NOT EXISTS idx_drafts_user_id ON drafts(user_id);
+
+ALTER TABLE drafts ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS drafts_select ON drafts;
+DROP POLICY IF EXISTS drafts_insert ON drafts;
+DROP POLICY IF EXISTS drafts_update ON drafts;
+DROP POLICY IF EXISTS drafts_delete ON drafts;
+CREATE POLICY drafts_select ON drafts FOR SELECT TO authenticated USING (user_id = (select auth.uid()));
+CREATE POLICY drafts_insert ON drafts FOR INSERT TO authenticated WITH CHECK (user_id = (select auth.uid()));
+CREATE POLICY drafts_update ON drafts FOR UPDATE TO authenticated USING (user_id = (select auth.uid())) WITH CHECK (user_id = (select auth.uid()));
+CREATE POLICY drafts_delete ON drafts FOR DELETE TO authenticated USING (user_id = (select auth.uid()));
+
+-- ========================================================================
+-- 结论：本次 iOS Native 对齐批次共 5 组新增/修改 SQL
+-- ========================================================================

@@ -4,9 +4,17 @@
 
 - 技术栈：React 19 + Vite 8 + Capacitor 8（Android）+ 腾讯云 CloudBase（PostgreSQL）
 - 规模：`src/` 159 个源文件 / 11.1 万行
-- **无 Git 仓库**，无版本历史与回滚点
+- 已建立 Git 仓库并推送 GitHub 私有基线（2026-09-20，见下节）
 - 数据层走腾讯云 CloudBase 远程，无自建后端（除本地 OCR 服务）
 - `.env` 内含真实 `VITE_CLOUDBASE_ACCESS_KEY`，对外分享前需脱敏
+
+## Git 基线与推送（2026-09-20 建立）
+
+- 本地仓库：项目根目录，分支 `main`；远端 `origin → https://github.com/egg-Li-dd/eggli-flashcard-app`（私有）
+- 基线提交 `744f166`「清理前基线快照 v2.1」：**525 文件 / 33.8 MB / 密钥命中 0**；远端 `main` = `b92ae18`（合并提交在上）
+- **`.gitignore` 已加固**：排除 `dist/`、`android/app/build`、`.gradle`、`android/app/src/main/assets/`（Capacitor 同步产物）、`*.aar`/`*.apk`、`.env`、keystore、根目录 `*.mjs` 运维脚本（**15 个脚本含明文 `service_role` 密钥**，必须保持排除）
+- **推送必须走本地 git 直推，不要用 MCP 的 `publish_local_project`**（`/git/trees` 稳定 403）。四个必须项：本机代理 `127.0.0.1:65532`、`-c http.sslVerify=false`、`-c credential.helper="store --file=<Windows 路径>"` 注入令牌（`git credential fill` 可取到 `gho_` OAuth）、`GIT_TERMINAL_PROMPT=0`
+- 完整配方与根因分析见根目录 `上传失败诊断说明.md`
 
 ## 架构要点
 

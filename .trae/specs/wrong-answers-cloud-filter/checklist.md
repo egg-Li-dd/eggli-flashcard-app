@@ -1,6 +1,0 @@
-- [ ] Checkpoint 1: SQL 中 wrong_answers 表已添加 updated_at 列
-- [ ] Checkpoint 2: sync.js TABLE_SCHEMAS.wrong_answers 已更新 autoAddUpdatedAt 和 fields
-- [ ] Checkpoint 3: "云端未更新"筛选显示本地有但云端没有的数据
-- [ ] Checkpoint 4: 筛选后操作按钮显示"上传到云端"而非"下载到本地"
-- [ ] Checkpoint 5: 界面按钮符合移动端适配要求，可见可用
-- [ ] Checkpoint 6: 文档分布.txt已更新相关记录

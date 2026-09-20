@@ -1,7 +1,0 @@
-- [ ] Checkpoint 1: sync.js FIELD_MAP_CAMEL_TO_SNAKE 已添加 avatarUrl 和 avatarType 的映射
-- [ ] Checkpoint 2: SQL 中 user_profiles 表结构定义完整（字段/索引/RLS/触发器）
-- [ ] Checkpoint 3: userProfile.js getUserProfile() 能正确从云端读取资料
-- [ ] Checkpoint 4: userProfile.js saveUserProfile() 能正确 upsert 到云端
-- [ ] Checkpoint 5: ProfileEditDialog 中保存的昵称和头像能在云端看到
-- [ ] Checkpoint 6: Account 页面在用户登录后能正确显示云端资料
-- [ ] Checkpoint 7: 文档分布.txt 已记录用户资料相关文件位置

@@ -1,4 +1,3 @@
-import ConnectionStatusBar from './components/ConnectionStatusBar'
 import { BrowserRouter, Routes, Route, NavLink, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom'
 import { useApp } from './context/AppContext'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
@@ -13,7 +12,6 @@ import SettingsDisplay from './pages/SettingsDisplay'
 import SettingsBackground from './pages/SettingsBackground'
 
 import SettingsDeveloper from './pages/SettingsDeveloper'
-import SettingsPcEngine from './pages/SettingsPcEngine'
 import Memorize from './pages/Memorize'
 import StudyPlan from './pages/StudyPlan'
 import UnitTestMain from './pages/UnitTestMain'
@@ -75,28 +73,6 @@ function TabBar() {
           gap: '8px',
         }}>
           <span>egg李</span>
-          {/* PC 引擎连接状态指示器 */}
-          {state.pcEngineConnected && (
-            <span title="PC 引擎已连接" style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '3px',
-              fontSize: '10px',
-              fontWeight: 500,
-              color: '#22c55e',
-              background: 'rgba(34,197,94,0.12)',
-              padding: '2px 7px',
-              borderRadius: '10px',
-              lineHeight: '18px',
-              whiteSpace: 'nowrap',
-            }}>
-              <span style={{
-                width: 6, height: 6, borderRadius: '50%',
-                backgroundColor: '#22c55e', display: 'inline-block',
-              }} />
-              PC
-            </span>
-          )}
         </span>
         <nav className="nav-links">
           {tabs.map(function (tab) {
@@ -141,7 +117,7 @@ function RequireAuth({ children }) {
 }
 
 function AppShell() {
-  const { state, showToast, setPcEngineConnected } = useApp()
+  const { state, showToast } = useApp()
   const navigate = useNavigate()
   const location = useLocation()
   const backPressedRef = useRef(0)
@@ -298,135 +274,6 @@ function AppShell() {
     }
   }, [])
 
-  // PC 引擎自动连接：启动时检测配置并连接
-  useEffect(function () {
-    console.log('[PC引擎] 自动连接检查启动')
-    const isNative = typeof window !== 'undefined' &&
-      (window.Capacitor?.getPlatform?.() !== 'web')
-    if (!isNative) {
-      console.log('[PC引擎] 非原生环境，跳过自动连接')
-      return
-    }
-
-    let pcCancelled = false
-    let retryCount = 0
-    const MAX_RETRIES = 3
-
-    const tryConnect = async () => {
-      try {
-        console.log('[PC引擎] 读取配置...')
-        const configStr = localStorage.getItem('pc_engine_config')
-        console.log('[PC引擎] 配置:', configStr ? '已找到' : '未找到')
-        if (!configStr) return
-        const config = JSON.parse(configStr)
-        if (!config.host || !config.token) {
-          console.log('[PC引擎] 配置不完整:', config.host ? '有host缺token' : '缺host')
-          return
-        }
-
-        console.log('[PC引擎] 正在连接:', config.host)
-        const baseUrl = `http://${config.host.replace(/^https?:\/\//, '').replace(/\/$/, '')}:19000`
-        // 方式1：直连 fetch（走系统 VPN）
-        let connected = false
-        try {
-          const res = await fetch(baseUrl + '/api/health', { method: 'GET', signal: AbortSignal.timeout(5000) })
-          if (res.ok) connected = true
-        } catch (_) {}
-        // 方式2：pcEngine.healthCheck（标准 fetch）
-        if (!connected) {
-          try {
-            const { healthCheck } = await import('./services/pcEngine')
-            const result = await healthCheck()
-            if (result) {
-              console.log('[PC引擎] 自动连接成功:', result.name)
-              connected = true
-              try {
-                const { listEngines } = await import('./services/pcEngine')
-                await listEngines()
-              } catch (_) {}
-            }
-          } catch (_) {}
-        }
-        if (connected) {
-          setPcEngineConnected(true)
-          return
-        }
-
-        console.log('[PC引擎] healthCheck 返回空（第' + (retryCount + 1) + '次）')
-        if (!pcCancelled && retryCount < MAX_RETRIES) {
-          retryCount++
-          setTimeout(tryConnect, 5000)
-        } else {
-          setPcEngineConnected(false)
-        }
-      } catch (e) {
-        console.warn('[PC引擎] 自动连接失败:', e.message)
-        if (!pcCancelled && retryCount < MAX_RETRIES) {
-          retryCount++
-          setTimeout(tryConnect, 5000)
-        } else {
-          setPcEngineConnected(false)
-        }
-      }
-    }
-
-    const timer = setTimeout(tryConnect, 5000)
-
-    // 心跳检测（10 秒间隔）：监测 PC 引擎连接状态
-    let heartbeatTimer = null
-    let heartbeatImmediate = null
-
-    const doHeartbeat = async () => {
-      if (pcCancelled) return
-      // PC 引擎心跳：同时尝试直连 fetch 和 pcEngine.healthCheck
-      // 任一成功即视为已连接
-      try {
-        const configStr = localStorage.getItem('pc_engine_config')
-        let connected = false
-        if (configStr) {
-          const config = JSON.parse(configStr)
-          if (config.host) {
-            const baseUrl = `http://${config.host.replace(/^https?:\/\//, '').replace(/\/$/, '')}:19000`
-            const token = config.token || ''
-            // 方式1：直连 fetch（走系统 VPN）
-            try {
-              const res = await fetch(baseUrl + '/api/health', { method: 'GET', signal: AbortSignal.timeout(5000) })
-              if (res.ok) connected = true
-            } catch (_) {}
-            // 方式2：pcEngine.healthCheck（标准 fetch）
-            if (!connected) {
-              try {
-                const { healthCheck } = await import('./services/pcEngine')
-                const ok = await healthCheck()
-                if (ok) connected = true
-              } catch (_) {}
-            }
-          }
-        }
-        setPcEngineConnected(connected)
-      } catch (_) {
-        setPcEngineConnected(false)
-      }
-    }
-
-    const startHeartbeat = () => {
-      if (heartbeatTimer) clearInterval(heartbeatTimer)
-      heartbeatTimer = setInterval(doHeartbeat, 10000)
-      // 启动后 1 秒立即执行一次初检，不等 10 秒
-      heartbeatImmediate = setTimeout(doHeartbeat, 1000)
-    }
-
-    // 立即启动心跳，尽早发现 PC 引擎状态变化
-    startHeartbeat()
-
-    return () => {
-      pcCancelled = true
-      clearTimeout(timer)
-      if (heartbeatTimer) clearInterval(heartbeatTimer)
-      if (heartbeatImmediate) clearTimeout(heartbeatImmediate)
-    }
-  }, [])
-
   return (
     <div className="app-container flex flex-col">
       <Routes>
@@ -453,7 +300,6 @@ function AppShell() {
           <Route path="/settings/display/background" element={<SettingsBackground />} />
           
           <Route path="/settings/developer" element={<SettingsDeveloper />} />
-          <Route path="/settings/pc-engine" element={<SettingsPcEngine />} />
           <Route path="/category/:id" element={<RequireAuth><Category /></RequireAuth>} />
           <Route path="/stats/:type" element={<RequireAuth><StatsDetail /></RequireAuth>} />
           <Route path="/stats/longterm" element={<RequireAuth><StatsLongTerm /></RequireAuth>} />
@@ -484,7 +330,6 @@ function TabBarLayout() {
       <div className="page-wrapper" style={{ flex: '1 1 auto', minHeight: 0 }}>
         <Outlet />
       
-      <ConnectionStatusBar />
 </div>
       {/* 全局悬浮窗：仅在 floating 模式下渲染 */}
       {state.inputBarMode === 'floating' && <FloatingInputBar />}

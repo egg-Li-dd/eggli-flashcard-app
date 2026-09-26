@@ -11,8 +11,6 @@ import { attachOriginalKnowledgePoints, buildKpMarkers } from '../utils/cardKnow
 import { buildOperationErrorMessage, buildSmartOrganizeSuccessMessage, dedupeCardsByKnowledgePoint } from '../utils/smartOrganizeUx'
 import { checkInputQuality } from '../utils/cardQualityChecker'
 import { getOcrCache, setOcrCache } from '../services/db'
-import { ocrWithFallback } from '../services/pcEngineFallback'
-import { getPcEngineConfig } from '../services/pcEngine'
 import { SUMMARY_LEVELS } from '../utils/constants'
 import InputBar from '../components/InputBar'
 import ImageEditor from '../components/ImageEditor'
@@ -2330,19 +2328,14 @@ export default function Category() {
 
   const handleImageOCR = useCallback(
     async (file) => {
-      // 凭证检查（当 PC 引擎已配置时跳过手机端凭证检查，由降级逻辑处理）
-      const { pcEngineServer: statePcEngine } = state
-      const engineCfg = typeof getPcEngineConfig === 'function' ? getPcEngineConfig() : { host: '' }
-      const hasPcEngine = !!(statePcEngine || engineCfg.host)
-
-      if (!hasPcEngine) {
-        const ocrEngine = state.ocrEngine || 'ai-model'
-        const isSparkMode = state.aiServiceMode === 'iflytek-spark'
-        const isVolcanoMode = state.aiServiceMode === 'volcano'
-        const isDashscopeMode = state.aiServiceMode === 'dashscope'
-        let hasCreds = false
-        let tip = ''
-        if (ocrEngine === 'paddleocr-local') {
+      // 凭证检查
+      const ocrEngine = state.ocrEngine || 'ai-model'
+      const isSparkMode = state.aiServiceMode === 'iflytek-spark'
+      const isVolcanoMode = state.aiServiceMode === 'volcano'
+      const isDashscopeMode = state.aiServiceMode === 'dashscope'
+      let hasCreds = false
+      let tip = ''
+      if (ocrEngine === 'paddleocr-local') {
           hasCreds = true
         } else if (ocrEngine === 'baidu-cloud') {
           hasCreds = !!(state.baiduOcrApiKey && state.baiduOcrSecretKey)
@@ -2363,7 +2356,6 @@ export default function Category() {
           showToast(tip, 'error')
           return
         }
-      }
 
       // [FIX #310] 状态锁：防止重复点击
       if (generatingRef.current) return
@@ -2383,8 +2375,31 @@ export default function Category() {
         if (cached) {
           text = cached.text
         } else {
-          // 使用带 PC 引擎优先降级的 OCR
-          text = await ocrWithFallback(file, state, showToast)
+          // 走用户配置的 OCR 引擎（AI 大模型 / 百度云 / 本地）
+          const effectiveOcrModel = isSparkMode
+            ? state.iflytekSparkModel
+            : isVolcanoMode
+              ? state.volcanoModel
+              : isDashscopeMode
+                ? state.dashscopeModel
+                : state.model
+          const base64 = await compressImage(file)
+          text = await extractTextFromImage(
+            base64, state.apiKey, state.aiServiceMode, effectiveOcrModel,
+            state.iflytekSparkApiKey, state.iflytekSparkApiSecret,
+            state.volcanoApiKey, state.dashscopeApiKey,
+            {
+              ocrEngine,
+              baiduOcrApiKey: state.baiduOcrApiKey,
+              baiduOcrSecretKey: state.baiduOcrSecretKey,
+              tesseractLanguage: state.tesseractLanguage || 'chi_sim+eng',
+            },
+            {
+              visionAiUrl: state.visionAiUrl,
+              visionAiKey: state.visionAiKey,
+              visionAiModel: state.visionAiModel,
+            },
+          )
           await setOcrCache(imageHash, { text })
         }
 

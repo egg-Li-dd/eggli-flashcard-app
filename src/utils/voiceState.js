@@ -13,7 +13,6 @@ export const VOICE_MODE = {
   IFLYTEK_IAT: 'iflytek-iat',
   DASHSCOPE_ASR: 'dashscope-asr',
   VOSK_OFFLINE: 'vosk-offline',
-  PC_ENGINE: 'pc-engine-voice',
 }
 
 export function createVoiceStateManager(initialState = VOICE_STATE.IDLE) {

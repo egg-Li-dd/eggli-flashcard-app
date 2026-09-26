@@ -38,13 +38,6 @@ const SETTINGS_CATEGORIES = [
     description: 'AI 生成调试面板、测试功能等',
     path: '/settings/developer',
   },
-  {
-    id: 'pc-engine',
-    icon: '🖥️',
-    title: 'PC 引擎代理',
-    description: '连接 PC 端 OCR/AI 引擎，文档解析和实时语音输入',
-    path: '/settings/pc-engine',
-  },
 ]
 
 const Arrow = () => (

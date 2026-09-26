@@ -56,8 +56,6 @@ export const SYNCED_SETTING_KEYS = [
   'ocrAutoGenerate',
   'ocrEngine',
   // PaddleOCR Token / Baidu OCR Key/Secret 不同步（敏感）
-  // PC 引擎代理配置（包含 host、token、引擎选择等，作为 JSON 对象整体同步）
-  'pcEngineConfig',
 ]
 
 // 敏感字段黑名单：即使旧云端数据中包含这些字段，也不会被加载到本地（防止历史泄露）

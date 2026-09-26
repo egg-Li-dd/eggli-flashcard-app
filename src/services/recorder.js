@@ -128,7 +128,6 @@ export const resolveAvailableMode = async (preferred) => {
   if (preferred === 'iflytek-rtasr-llm' && (hasRecorder || hasNativeAudio)) return { mode: 'iflytek-rtasr-llm', reason: null }
   if (preferred === 'iflytek-ost' && (hasRecorder || hasNativeAudio)) return { mode: 'iflytek-ost', reason: null }
   if (preferred === 'dashscope-asr' && (hasRecorder || hasNativeAudio)) return { mode: 'dashscope-asr', reason: null }
-  if (preferred === 'pc-engine-voice') return { mode: 'pc-engine-voice', reason: null }
 
   if (!hasWebSpeech && !hasRecorder && !hasNativeAudio) {
     return { mode: null, reason: '当前设备没有可用的语音输入方式' }

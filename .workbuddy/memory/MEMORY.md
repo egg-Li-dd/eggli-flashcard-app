@@ -22,10 +22,11 @@
 
 ## 清理进度（2026-09-26 更新）
 
-- 已完成批次 1-6：构建产物 1286MB、.trae 189 文件、34 脚本、死代码 5505 行、**Tailscale 全模块（9 文件含 69MB AAR，提交 6add5a1）**
+- 已完成批次 1-6 + 5：构建产物 1286MB、.trae 189 文件、34 脚本、死代码 5505 行、Tailscale 全模块（9 文件含 69MB AAR，6add5a1）、自建 PaddleOCR 服务（4 文件 + 引擎选项全链路，7bed532）
 - 归档目录：项目外 `../_cleanup_archive_2026-09-20/` 与 `../_cleanup_archive_2026-09-26/`（保留原目录结构，可 mv 回原位）
 - **Tailscale 移除要点**：pcEngine.js 的 fetchViaTailscale 已换 `pcRequest()`（fetch + AbortSignal.timeout，返回 {statusCode, body} 兼容形状）；jna 依赖保留（vosk 需要）；FOREGROUND_SERVICE_VPN 权限已删
-- 待办批次：5 PaddleOCR（浅耦合，3 文件）→ 7 PC 引擎（15 文件 700+ 引用、aiService 7 处 callPcEngineAi、SettingsPcEngine 页，风险最高，需完整 APK 重建验证）
+- **PaddleOCR 移除要点**：`paddleOcrLocal.js`（WebView 离线推理）保留勿删；`paddleocr-server` 旧配置值有双兜底（AppContext 一次性迁移 + aiService 运行时回退 ai-model）；SENSITIVE 黑名单保留 paddleocrApiToken
+- 待办批次：仅剩 7 PC 引擎（15 文件 700+ 引用、aiService 7 处 callPcEngineAi、SettingsPcEngine 页、pcEngine.js/pcEngineProxy/pcEngineFallback，风险最高，需完整 APK 重建验证）
 
 ## 架构要点
 

@@ -40,8 +40,6 @@ import { extractTextWithPaddleOcrLocal } from './paddleOcrLocal'
 import { extractTextWithBaiduOcr } from './baiduOcr'
 
 import { extractTextWithTesseract } from './tesseractOcr'
-import { aiChatCompletion } from './pcEngineProxy'
-import { checkPcEngineAvailable } from './pcEngineFallback'
 import { checkKnowledgePointsQuality, checkCardsQuality, validateAiResponseFormat, autoFixCards } from '../utils/cardQualityChecker'
 
 // 强模型归类阈值：现有卡片总数超过此值走多轮分批
@@ -57,29 +55,6 @@ export class AiTimeoutError extends Error {
     super(message)
     this.name = 'AiTimeoutError'
     this.stage = stage
-  }
-}
-
-/**
- * 调用 PC 引擎 AI（带自动降级）
- * PC 引擎配置并可用时发起到 /api/ai/chat，失败时返回 null
- */
-async function callPcEngineAi(messages, options = {}) {
-  const { getPcEngineConfig } = await import('./pcEngine')
-  const config = getPcEngineConfig()
-  if (!config.host) return null
-  const baseUrl = `http://${config.host}:19000`
-  const token = config.token
-  try {
-    const result = await aiChatCompletion(baseUrl, token, messages, {
-      temperature: options.temperature ?? 0.7,
-      maxTokens: options.maxTokens ?? 4096,
-      timeout: options.timeout ?? 15000,
-    })
-    return result
-  } catch (e) {
-    console.warn('[PC引擎AI] 调用失败，降级到手机端:', e.message)
-    return null
   }
 }
 
@@ -102,13 +77,6 @@ export async function cleanUpSpeechText(text, apiKey, model, aiServiceMode, spar
       result = await cleanUpSpeechTextWithVolcano(text, volcanoApiKey, model)
     } else if (aiServiceMode === 'dashscope') {
       result = await cleanUpSpeechTextWithDashscope(text, dashscopeApiKey, model)
-    } else if (aiServiceMode === 'pc-engine') {
-      const pcResult = await callPcEngineAi([{ role: 'user', content: text }], { temperature: 0.3 })
-      if (pcResult) {
-        result = { content: pcResult.content }
-      } else {
-        result = await dsCleanUpSpeechText(text, apiKey, model)
-      }
     } else {
       result = await dsCleanUpSpeechText(text, apiKey, model)
     }
@@ -191,13 +159,8 @@ export async function reorganizeUnits(categoryName, allCards, existingUnitNames,
       })
       if (!resp.ok) throw new Error('Dashscope reorganize failed')
       raw = resp.data?.choices?.[0]?.message?.content || ''
-    } else if (isPcEngine) {
-      const pcResult = await callPcEngineAi([{ role: 'user', content: prompt }], { temperature: 0.3 })
-      if (pcResult) {
-        raw = pcResult.content
-      }
     }
-    // PC 引擎未配置或失败时，走原有 AI 服务
+    // 无匹配服务时，走 DeepSeek 兜底
     if (!raw) {
       const resp = await httpPost(DEEPSEEK_API_URL, {
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (config.apiKey || '') },
@@ -528,14 +491,6 @@ export async function generateCards(text, apiKey, model, aiServiceMode, summaryL
       result = await generateCardsWithVolcano(text, volcanoApiKey, model, summaryLevel)
     } else if (aiServiceMode === 'dashscope') {
       result = await generateCardsWithDashscope(text, dashscopeApiKey, model, summaryLevel)
-    } else if (aiServiceMode === 'pc-engine') {
-      const prompt = `请根据以下知识点生成 ${summaryLevel} 张学习卡片，返回 JSON 数组`
-      const pcResult = await callPcEngineAi([{ role: 'user', content: prompt + '\n\n' + text }], { temperature: 0.7 })
-      if (pcResult) {
-        result = { content: pcResult.content }
-      } else {
-        result = await dsGenerateCards(text, apiKey, model, summaryLevel)
-      }
     }
     logAiCall({
       purpose: 'card-generation',
@@ -858,11 +813,6 @@ export async function generateTestQuestions(prompt, config, maxTokens = 4096) {
       }
       result = resp.data?.choices?.[0]?.message?.content || ''
       if (!result) throw new Error('Dashscope: 未返回有效内容')
-    } else if (aiServiceMode === 'pc-engine') {
-      const pcResult = await callPcEngineAi([{ role: 'user', content: prompt }], { temperature: 0.7, maxTokens: 4096 })
-      if (pcResult) {
-        result = pcResult.content
-      }
     } else {
       // DeepSeek
       const key = (apiKey || '').trim()
@@ -2930,13 +2880,6 @@ async function callAiProviderInner(prompt, config, attempt = 0) {
     if (!content) throw new Error('Dashscope: 未返回有效内容')
     return { content, tokens: resp.data?.usage?.total_tokens || 0 }
   }
-  if (aiServiceMode === 'pc-engine') {
-    const pcResult = await callPcEngineAi([{ role: 'user', content: prompt }], { temperature: config.temperature ?? 0.3, maxTokens: maxTokens || 4096 })
-    if (!pcResult) {
-      // PC 引擎失败，降级到下方 DeepSeek
-    } else {
-      return { content: pcResult.content, tokens: pcResult.tokens }
-    }  }
   // DeepSeek
   const key = (apiKey || '').trim()
   if (!key) throw new Error('DeepSeek: 未填写 API Key')
@@ -5473,7 +5416,7 @@ ${newCardLines.join('\n')}
  * 通用的 AI 分类调用（支持 DeepSeek / Spark / Volcano / Dashscope）
  * 返回解析后的 JSON 数组
  */
-async function callAIClassify(prompt, config, isSpark, isVolcano, isDashscope, isPcEngine) {
+async function callAIClassify(prompt, config, isSpark, isVolcano, isDashscope) {
   const body = {
     model: config.model || 'deepseek-v4-pro',
     messages: [{ role: 'user', content: prompt }],
@@ -5507,13 +5450,8 @@ async function callAIClassify(prompt, config, isSpark, isVolcano, isDashscope, i
     })
     if (!resp.ok) throw new Error('Dashscope classify failed: ' + (resp.data?.error?.message || resp.data?.message || `HTTP ${resp.status}`))
     raw = resp.data?.choices?.[0]?.message?.content || ''
-  } else if (isPcEngine) {
-    const pcResult = await callPcEngineAi([{ role: 'user', content: prompt }], { temperature: 0.3 })
-    if (pcResult) {
-      raw = pcResult.content
-    }
   }
-  // PC 引擎失败时，降级到 DeepSeek
+  // 无匹配服务时，降级到 DeepSeek
   if (!raw) {
     const resp = await httpPost(DEEPSEEK_API_URL, {
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (config.apiKey || '') },
@@ -6288,7 +6226,7 @@ ${newCardLines.join('\n')}
     // 调用 AI
     let assignments = []
     try {
-      const result = await callAIClassify(prompt, config, isSpark, isVolcano, isDashscope, config?.aiServiceMode === 'pc-engine')
+      const result = await callAIClassify(prompt, config, isSpark, isVolcano, isDashscope)
       if (Array.isArray(result) && result.length > 0) {
         assignments = result
       }
@@ -6380,7 +6318,7 @@ ${newCardLines.join('\n')}
 - 不要输出 JSON、不要输出代码块、不要输出任何说明文字`
 
     try {
-      const result = await callAIClassify(prompt, config, isSpark, isVolcano, isDashscope, config?.aiServiceMode === 'pc-engine')
+      const result = await callAIClassify(prompt, config, isSpark, isVolcano, isDashscope)
       if (Array.isArray(result) && result.length > 0) {
         for (const item of result) {
           const tempIndex = Number(item.cardIndex)

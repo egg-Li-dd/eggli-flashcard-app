@@ -523,27 +523,6 @@ export default function SettingsAiService() {
               </div>
             </>
           )}
-
-          {/* PC 引擎 AI 模式提示 */}
-          {state.aiServiceMode === 'pc-engine' && (
-            <div className="settings-section">
-              <div style={{
-                padding: '14px 16px', borderRadius: 10,
-                backgroundColor: state.pcEngineServer ? 'var(--color-success-light)' : 'var(--color-warning-light)',
-                color: state.pcEngineServer ? 'var(--color-success-dark)' : 'var(--color-warning-dark)',
-                fontSize: 14, lineHeight: 1.6,
-              }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>
-                  {state.pcEngineServer ? '✅ PC 引擎已配置' : '⚠️ 未检测到 PC 引擎'}
-                </div>
-                <div>
-                  {state.pcEngineServer
-                    ? `AI 服务将通过 PC 引擎（${state.pcEngineServer}）处理，无需额外 API Key 和模型配置。`
-                    : '请先在「设置 → PC 引擎」中配置连接地址。'}
-                </div>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* AI 调用日志区块 */}

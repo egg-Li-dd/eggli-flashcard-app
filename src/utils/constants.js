@@ -16,7 +16,6 @@ export const AI_SERVICE_MODES = [
   { value: 'iflytek-spark', label: '讯飞星火 (Spark)' },
   { value: 'volcano', label: '火山引擎 (豆包/Ark)' },
   { value: 'dashscope', label: '阿里云千问 (DashScope)' },
-  { value: 'pc-engine', label: 'PC 引擎 AI' },
   { value: 'vision-ai', label: '通用AI (视觉专用)' },
 ]
 
@@ -133,11 +132,6 @@ export const STORAGE_KEYS = {
   STYLE_SCHEMES: 'style_schemes',
   ACTIVE_STYLE_SCHEME: 'active_style_scheme',
   // PC 引擎代理配置
-  PC_ENGINE_SERVER: 'pc_engine_server',   // PC IP 地址，如 192.168.1.100
-  PC_ENGINE_PORT: 'pc_engine_port',       // 端口号，默认 19000
-  PC_ENGINE_TOKEN: 'pc_engine_token',      // 访问 Token
-  PC_ENGINE_PARSE_ENGINE: 'pc_engine_parse_engine', // 文档解析引擎：mineru/docling/paddleocr/qwen2-vl
-  PC_ENGINE_ASR: 'pc_engine_asr',                   // PC 语音识别引擎：voice/sherpa/whisper/funasr
   // 新增：通用AI视觉独立配置（用于图像识别优先调用）
   VISION_AI_URL: 'vision_ai_url',
   VISION_AI_KEY: 'vision_ai_key',
@@ -203,11 +197,6 @@ export const SPEECH_MODES = [
     value: 'dashscope-asr',
     label: '阿里云语音识别 (Paraformer)',
     description: '通过阿里云DashScope一句话识别API，高质量中文识别，需API Key',
-  },
-  {
-    value: 'pc-engine-voice',
-    label: 'PC 引擎语音 (OpenLess)',
-    description: '通过 PC 端 OpenLess 实时语音识别，需在同一局域网内',
   },
 ]
 

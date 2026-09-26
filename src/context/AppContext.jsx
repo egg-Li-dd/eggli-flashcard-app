@@ -170,8 +170,16 @@ const initialState = {
   styleSchemes: JSON.parse(localStorage.getItem(STORAGE_KEYS.STYLE_SCHEMES) || '[]'),
   activeStyleScheme: localStorage.getItem(STORAGE_KEYS.ACTIVE_STYLE_SCHEME) || 'preset-default-light',
   toast: null,
-  // 语音识别相关
-  speechMode: localStorage.getItem(STORAGE_KEYS.SPEECH_MODE) || (Capacitor.isNativePlatform() ? 'vosk-offline' : 'web-speech'),
+  // 语音识别相关（PC 引擎语音已下线，旧值一次性迁移）
+  speechMode: (() => {
+    const fallback = Capacitor.isNativePlatform() ? 'vosk-offline' : 'web-speech'
+    const saved = localStorage.getItem(STORAGE_KEYS.SPEECH_MODE)
+    if (saved === 'pc-engine-voice') {
+      localStorage.setItem(STORAGE_KEYS.SPEECH_MODE, fallback)
+      return fallback
+    }
+    return saved || fallback
+  })(),
   speechApiUrl: localStorage.getItem(STORAGE_KEYS.SPEECH_API_URL) || '',
   speechApiKey: localStorage.getItem(STORAGE_KEYS.SPEECH_API_KEY) || '',
   iflytekAppId: localStorage.getItem(STORAGE_KEYS.IFLYTEK_APP_ID) || '',
@@ -185,7 +193,14 @@ const initialState = {
   draftCount: 0,
   // v 新增：系统级悬浮窗是否已启用（仅 APK 模式有效，浏览器自动降级为 floating）
   systemFloatingEnabled: localStorage.getItem('app_system_floating_enabled') === 'true',
-  aiServiceMode: localStorage.getItem(STORAGE_KEYS.AI_SERVICE_MODE) || 'deepseek',
+  aiServiceMode: (() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.AI_SERVICE_MODE)
+    if (saved === 'pc-engine') {
+      localStorage.setItem(STORAGE_KEYS.AI_SERVICE_MODE, 'deepseek')
+      return 'deepseek'
+    }
+    return saved || 'deepseek'
+  })(),
   iflytekSparkModel: localStorage.getItem(STORAGE_KEYS.IFLYTEK_SPARK_MODEL) || 'lite',
   // 新增：文字识别服务 - 讯飞星火独立配置（APIKey + APISecret）
   iflytekSparkApiKey: localStorage.getItem(STORAGE_KEYS.IFLYTEK_SPARK_API_KEY) || '',
@@ -236,14 +251,6 @@ const initialState = {
   // 新增：阿里云千问大模型配置
   dashscopeApiKey: localStorage.getItem(STORAGE_KEYS.DASHSCOPE_API_KEY) || '',
   dashscopeModel: localStorage.getItem(STORAGE_KEYS.DASHSCOPE_MODEL) || 'qwen3.5-plus-2026-04-20',
-  // PC 引擎代理配置
-  pcEngineServer: localStorage.getItem(STORAGE_KEYS.PC_ENGINE_SERVER) || '',
-  pcEnginePort: localStorage.getItem(STORAGE_KEYS.PC_ENGINE_PORT) || '19000',
-  pcEngineToken: localStorage.getItem(STORAGE_KEYS.PC_ENGINE_TOKEN) || '',
-  pcEngineParseEngine: localStorage.getItem(STORAGE_KEYS.PC_ENGINE_PARSE_ENGINE) || 'mineru',
-  pcEngineAsr: localStorage.getItem(STORAGE_KEYS.PC_ENGINE_ASR) || 'voice',
-  // PC 引擎连接状态（运行时，不持久化）
-  pcEngineConnected: false,
   // 通用AI视觉独立配置
   visionAiUrl: localStorage.getItem(STORAGE_KEYS.VISION_AI_URL) || '',
   visionAiKey: localStorage.getItem(STORAGE_KEYS.VISION_AI_KEY) || '',
@@ -447,24 +454,6 @@ function reducer(state, action) {
     case 'SET_DASHSCOPE_MODEL':
       localStorage.setItem(STORAGE_KEYS.DASHSCOPE_MODEL, action.payload)
       return { ...state, dashscopeModel: action.payload }
-    // PC 引擎代理配置
-    case 'SET_PC_ENGINE_SERVER':
-      localStorage.setItem(STORAGE_KEYS.PC_ENGINE_SERVER, action.payload)
-      return { ...state, pcEngineServer: action.payload }
-    case 'SET_PC_ENGINE_PORT':
-      localStorage.setItem(STORAGE_KEYS.PC_ENGINE_PORT, action.payload)
-      return { ...state, pcEnginePort: action.payload }
-    case 'SET_PC_ENGINE_TOKEN':
-      localStorage.setItem(STORAGE_KEYS.PC_ENGINE_TOKEN, action.payload)
-      return { ...state, pcEngineToken: action.payload }
-    case 'SET_PC_ENGINE_PARSE_ENGINE':
-      localStorage.setItem(STORAGE_KEYS.PC_ENGINE_PARSE_ENGINE, action.payload)
-      return { ...state, pcEngineParseEngine: action.payload }
-    case 'SET_PC_ENGINE_ASR':
-      localStorage.setItem(STORAGE_KEYS.PC_ENGINE_ASR, action.payload)
-      return { ...state, pcEngineAsr: action.payload }
-    case 'SET_PC_ENGINE_CONNECTED':
-      return { ...state, pcEngineConnected: action.payload }
     case 'SET_VISION_AI_URL':
       localStorage.setItem(STORAGE_KEYS.VISION_AI_URL, action.payload)
       return { ...state, visionAiUrl: action.payload }
@@ -584,8 +573,6 @@ export function AppProvider({ children }) {
         const storageKey = storageKeyMap[key]
         if (storageKey) {
           localStorage.setItem(storageKey, String(value))
-        } else if (key === 'pcEngineConfig' && typeof value === 'object') {
-          localStorage.setItem('pc_engine_config', JSON.stringify(value))
         }
 
         // 写入 state（dispatch 对应的 action）
@@ -1206,27 +1193,6 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_DASHSCOPE_MODEL', payload: model })
   }, [])
 
-  // PC 引擎代理配置
-  const setPcEngineServer = useCallback((server) => {
-    dispatch({ type: 'SET_PC_ENGINE_SERVER', payload: server })
-  }, [])
-  const setPcEnginePort = useCallback((port) => {
-    dispatch({ type: 'SET_PC_ENGINE_PORT', payload: port })
-  }, [])
-  const setPcEngineToken = useCallback((token) => {
-    dispatch({ type: 'SET_PC_ENGINE_TOKEN', payload: token })
-  }, [])
-  const setPcEngineParseEngine = useCallback((engine) => {
-    dispatch({ type: 'SET_PC_ENGINE_PARSE_ENGINE', payload: engine })
-  }, [])
-  const setPcEngineAsr = useCallback((asr) => {
-    dispatch({ type: 'SET_PC_ENGINE_ASR', payload: asr })
-  }, [])
-  // PC 引擎连接运行时状态（不持久化 localStorage）
-  const setPcEngineConnected = useCallback((connected) => {
-    dispatch({ type: 'SET_PC_ENGINE_CONNECTED', payload: !!connected })
-  }, [])
-
   const setVisionAiUrl = useCallback((url) => {
     dispatch({ type: 'SET_VISION_AI_URL', payload: url })
   }, [])
@@ -1518,13 +1484,6 @@ export function AppProvider({ children }) {
     // 新增：阿里云千问大模型配置
     setDashscopeApiKey,
     setDashscopeModel,
-    // PC 引擎代理配置
-    setPcEngineServer,
-    setPcEnginePort,
-    setPcEngineToken,
-    setPcEngineParseEngine,
-    setPcEngineAsr,
-    setPcEngineConnected,
     setVisionAiUrl,
     setVisionAiKey,
     setVisionAiModel,

@@ -9,9 +9,6 @@ import {
   cancelVoskListening, addVoskPartialListener, releaseVoskModel,
 } from '../services/voskService'
 import { transcribeWithWhisperAPI, transcribeWithIflytek, transcribeWithDashscope } from '../services/transcribe'
-import { getPcEngineConfig } from '../services/pcEngine'
-import { createPcVoiceSession } from '../services/pcEngineProxy'
-import { useApp } from '../context/AppContext'
 import ImageEditor from './ImageEditor'
 import { createVoiceStateManager, TimerManager, createVoiceResourceManager } from '../utils/voiceState'
 import { createAudioStreamRecorder, getMicrophoneStream, calculateAudioLevel } from '../services/audioUtils'
@@ -672,66 +669,6 @@ export default function InputBar({
         return
       }
 
-      // ===== pc-engine-voice 实时语音识别 =====
-      if (effectiveMode === 'pc-engine-voice') {
-        const { host, token, asrEngine } = getPcEngineConfig()
-        if (!host || !token) {
-          voiceState.unlockMutex()
-          showMsg('请先在「设置 → PC 引擎连接」中配置电脑地址和 Token', 'error', [{ label: '去设置', onClick: goSettings }])
-          return
-        }
-
-        const baseUrl = `http://${host}:19000`
-        transcriptRef.current = ''
-        partialTranscriptRef.current = ''
-
-        let mediaStream = null
-        let audioStreamRecorder = null
-
-        const session = createPcVoiceSession(baseUrl, token, asrEngine || 'sherpa', {
-          onReady: () => {
-            voiceState.transition(voiceState.states.RECORDING)
-            recordingStartTimeRef.current = Date.now()
-            setRecordingDuration(0)
-            timerManager.set('duration', () => {
-              setRecordingDuration(Math.floor((Date.now() - recordingStartTimeRef.current) / 1000))
-            }, 500)
-            session.start()
-          },
-          onPartial: (text) => {
-            if (text) handlePartialResult(text)
-          },
-          onResult: (text) => {
-            if (text) transcriptRef.current = text
-          },
-          onError: (msg) => {
-            showMsg('PC 引擎语音识别错误: ' + msg, 'error')
-          },
-        })
-        resourceManager.registerPcSession(session)
-
-        try {
-          mediaStream = await getMicrophoneStream()
-          resourceManager.registerPcMediaStream(mediaStream)
-          
-          audioStreamRecorder = createAudioStreamRecorder((pcmData) => {
-            if (session && session.state === 'recording') {
-              session.sendAudio(pcmData.buffer)
-            }
-            setAudioLevel(calculateAudioLevel(pcmData))
-          })
-          resourceManager.registerPcStreamRecorder(audioStreamRecorder)
-          
-          await audioStreamRecorder.start(mediaStream, 16000)
-        } catch (err) {
-          voiceState.transition(voiceState.states.IDLE)
-          voiceState.unlockMutex()
-          resourceManager.cleanupAll()
-          showMsg(err?.message || '无法启动麦克风', 'error')
-        }
-        return
-      }
-
       voiceState.unlockMutex()
       showMsg(downgradeReason || '当前没有可用的语音识别方式，请在「设置」中切换语音识别模式', 'error', downgradeReason ? [] : [{ label: '去设置', onClick: goSettings }])
     } catch (e) {
@@ -749,28 +686,6 @@ export default function InputBar({
     setAudioLevel(0)
 
     voiceState.transition(voiceState.states.CLEANING)
-
-    if (effectiveMode === 'pc-engine-voice') {
-      const session = resourceManager.get('pc_session')
-      const recorder = resourceManager.get('pc_audio_recorder')
-      setPartialText('')
-      if (session) {
-        try {
-          const text = session.stop()
-          if (text && text.trim()) {
-            transcriptRef.current = text
-            onChange(prev => prev + (prev && !prev.endsWith('\n') ? '\n' : '') + text.trim())
-            if (navigator.vibrate) navigator.vibrate(50)
-          }
-        } catch (e) {
-          console.warn('[PC引擎语音] stop error:', e.message)
-        }
-      }
-      voiceState.transition(voiceState.states.IDLE)
-      voiceState.unlockMutex()
-      resourceManager.cleanupAll()
-      return
-    }
 
     if (effectiveMode === 'vosk-offline') {
       setPartialText('')
@@ -1020,37 +935,6 @@ export default function InputBar({
     galleryInputRef.current?.click()
   }, [])
 
-  const handleDocumentUpload = useCallback(async () => {
-    if (disabled || cleaning) return
-    const { getPcEngineConfig } = await import('../services/pcEngine')
-    const config = getPcEngineConfig()
-    if (!config.host || !config.token) {
-      showMsg('请先在「设置 → PC 引擎」中配置连接', 'warn', [{ label: '去设置', onClick: goSettings }])
-      return
-    }
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.pdf,.docx,.xlsx,.pptx,.epub,.html,.md,.txt'
-    input.onchange = async (e) => {
-      const file = e.target?.files?.[0]
-      if (!file) return
-      const { parseDocument } = await import('../services/pcEngineProxy')
-      const baseUrl = `http://${config.host}:19000`
-      const engine = config.docEngine || 'mineru'
-      showMsg('正在解析文档...', 'info')
-      try {
-        const markdown = await parseDocument(baseUrl, config.token, file, engine,
-          (progress) => {
-            if (progress < 100) showMsg(`文档解析中 ${progress}%`, 'info')
-          })
-        onChange(prev => prev + (prev && !prev.endsWith('\n') ? '\n' : '') + markdown)
-        showMsg('文档解析完成，已写入输入框', 'success')
-      } catch (err) {
-        showMsg('文档解析失败: ' + (err.message || '未知错误'), 'error')
-      }
-    }
-    input.click()
-  }, [disabled, cleaning, showMsg, goSettings, onChange])
 
   const handleSubmit = () => {
     const t = value.trim()
@@ -1179,17 +1063,6 @@ export default function InputBar({
           }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
             相册
-          </button>
-          <button onClick={handleDocumentUpload} disabled={disabled || cleaning || ocrLoading} aria-label="上传文档" style={{
-            flex: 1, minHeight: '38px', padding: '6px 10px', borderRadius: '10px',
-            backgroundColor: 'var(--color-surface)', border: '1.5px solid var(--color-border)',
-            color: 'var(--color-text)', fontSize: '12px', fontWeight: 500,
-            cursor: (disabled || cleaning || ocrLoading) ? 'not-allowed' : 'pointer',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px',
-            transition: 'all 0.15s ease', opacity: (disabled || cleaning || ocrLoading) ? 0.45 : 1,
-          }}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-            文档
           </button>
         </div>
         <div style={{ display: 'flex', gap: '6px' }}>

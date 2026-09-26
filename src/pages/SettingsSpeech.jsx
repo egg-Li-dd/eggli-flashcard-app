@@ -125,8 +125,7 @@ export default function SettingsSpeech() {
   const isRealTimeMode = (() => {
     const mode = state.speechMode
     return mode === 'vosk-offline' || mode === 'web-speech' ||
-           mode === 'iflytek-rtasr-std' || mode === 'iflytek-rtasr-llm' ||
-           mode === 'pc-engine-voice'
+           mode === 'iflytek-rtasr-std' || mode === 'iflytek-rtasr-llm'
   })()
 
   const testMediaStreamRef = useRef(null)
@@ -310,9 +309,6 @@ export default function SettingsSpeech() {
         })
       } else if (mode === 'web-speech') {
         text = '（浏览器语音模式请在输入栏直接使用，测试面板暂不支持该模式）'
-        addTestLog('info', '模式说明', text)
-      } else if (mode === 'pc-engine-voice') {
-        text = '（PC引擎语音模式请在输入栏直接使用，测试面板暂不支持该模式）'
         addTestLog('info', '模式说明', text)
       } else {
         text = '（当前模式暂不支持测试）'
@@ -913,30 +909,6 @@ export default function SettingsSpeech() {
             <span className="settings-row-value">{currentSpeech?.label || '浏览器语音'}</span>
             <Arrow />
           </div>
-
-          {/* PC 引擎语音连接状态 */}
-          {state.speechMode === 'pc-engine-voice' && (() => {
-            const config = typeof getPcEngineConfig === 'function' ? getPcEngineConfig() : { host: '' }
-            const connected = state.pcEngineConnected
-            return (
-              <div style={{
-                padding: '10px 12px', borderRadius: '8px', marginTop: '8px',
-                backgroundColor: connected ? 'var(--color-success-light)' : 'var(--color-warning-light)',
-                color: connected ? 'var(--color-success-dark)' : 'var(--color-warning-dark)',
-                fontSize: '13px', lineHeight: 1.5,
-                display: 'flex', alignItems: 'center', gap: '8px',
-              }}>
-                <span style={{ width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
-                  backgroundColor: connected ? '#22c55e' : '#ef4444' }} />
-                <div>
-                  <div style={{ fontWeight: 500 }}>{connected ? 'PC 引擎已连接' : 'PC 引擎未连接'}</div>
-                  <div style={{ fontSize: '12px', opacity: 0.8, marginTop: '2px' }}>
-                    主机: {config.host || '未配置'} · 引擎: {config.asrEngine || 'sherpa'}
-                  </div>
-                </div>
-              </div>
-            )
-          })()}
 
           {/* 语音识别功能测试面板 */}
           <div className="settings-block" style={{ marginTop: '12px' }}>

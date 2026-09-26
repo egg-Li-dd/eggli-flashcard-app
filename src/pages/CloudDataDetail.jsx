@@ -612,8 +612,6 @@ export default function CloudDataDetail() {
         for (const [k, v] of Object.entries(extracted)) {
           if (setterMap[k]) {
             setterMap[k](v)
-          } else if (k === 'pcEngineConfig' && typeof v === 'object') {
-            localStorage.setItem('pc_engine_config', JSON.stringify(v))
           }
         }
         showToast('设置下载成功', 'success')

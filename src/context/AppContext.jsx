@@ -225,8 +225,6 @@ const initialState = {
   paddleocrLanguage: localStorage.getItem(STORAGE_KEYS.PADDLEOCR_LANGUAGE) || 'ch',
   baiduOcrApiKey: localStorage.getItem(STORAGE_KEYS.BAIDU_OCR_API_KEY) || '',
   baiduOcrSecretKey: localStorage.getItem(STORAGE_KEYS.BAIDU_OCR_SECRET_KEY) || '',
-  // Tailscale 认证密钥
-  tailscaleAuthKey: localStorage.getItem('tailscale_auth_key') || '',
   tesseractLanguage: localStorage.getItem(STORAGE_KEYS.TESSERACT_LANGUAGE) || 'chi_sim+eng',
   // 新增：火山引擎豆包大模型配置
   volcanoApiKey: localStorage.getItem(STORAGE_KEYS.VOLCANO_ENGINE_API_KEY) || '',
@@ -242,8 +240,6 @@ const initialState = {
   pcEngineAsr: localStorage.getItem(STORAGE_KEYS.PC_ENGINE_ASR) || 'voice',
   // PC 引擎连接状态（运行时，不持久化）
   pcEngineConnected: false,
-  // Tailscale VPN 连接状态（运行时，不持久化）
-  tailscaleConnected: false,
   // 通用AI视觉独立配置
   visionAiUrl: localStorage.getItem(STORAGE_KEYS.VISION_AI_URL) || '',
   visionAiKey: localStorage.getItem(STORAGE_KEYS.VISION_AI_KEY) || '',
@@ -354,9 +350,6 @@ function reducer(state, action) {
     case 'SET_BAIDU_OCR_SECRET_KEY':
       localStorage.setItem(STORAGE_KEYS.BAIDU_OCR_SECRET_KEY, action.payload)
       return { ...state, baiduOcrSecretKey: action.payload }
-    case 'SET_TAILSCALE_AUTH_KEY':
-      localStorage.setItem('tailscale_auth_key', action.payload)
-      return { ...state, tailscaleAuthKey: action.payload }
     case 'SET_TESSERACT_LANGUAGE':
       localStorage.setItem(STORAGE_KEYS.TESSERACT_LANGUAGE, action.payload)
       return { ...state, tesseractLanguage: action.payload }
@@ -477,8 +470,6 @@ function reducer(state, action) {
       return { ...state, pcEngineAsr: action.payload }
     case 'SET_PC_ENGINE_CONNECTED':
       return { ...state, pcEngineConnected: action.payload }
-    case 'SET_TAILSCALE_CONNECTED':
-      return { ...state, tailscaleConnected: action.payload }
     case 'SET_VISION_AI_URL':
       localStorage.setItem(STORAGE_KEYS.VISION_AI_URL, action.payload)
       return { ...state, visionAiUrl: action.payload }
@@ -602,8 +593,6 @@ export function AppProvider({ children }) {
           localStorage.setItem(storageKey, String(value))
         } else if (key === 'pcEngineConfig' && typeof value === 'object') {
           localStorage.setItem('pc_engine_config', JSON.stringify(value))
-        } else if (key === 'tailscaleAutoConnect' && typeof value === 'boolean') {
-          localStorage.setItem('tailscale_auto_connect', value ? 'true' : 'false')
         }
 
         // 写入 state（dispatch 对应的 action）
@@ -647,7 +636,6 @@ export function AppProvider({ children }) {
           ocrEngine: 'SET_OCR_ENGINE',
           paddleocrServerUrl: 'SET_PADDLEOCR_SERVER_URL',
           paddleocrLanguage: 'SET_PADDLEOCR_LANGUAGE',
-          tailscaleAuthKey: 'SET_TAILSCALE_AUTH_KEY',
         }
         const actionType = actionTypeMap[key]
         if (actionType) {
@@ -1101,9 +1089,6 @@ export function AppProvider({ children }) {
   const setBaiduOcrSecretKey = useCallback((key) => {
     dispatch({ type: 'SET_BAIDU_OCR_SECRET_KEY', payload: key })
   }, [])
-  const setTailscaleAuthKey = useCallback((key) => {
-    dispatch({ type: 'SET_TAILSCALE_AUTH_KEY', payload: key })
-  }, [])
   const setTesseractLanguage = useCallback((lang) => {
     dispatch({ type: 'SET_TESSERACT_LANGUAGE', payload: lang })
   }, [])
@@ -1258,10 +1243,6 @@ export function AppProvider({ children }) {
   // PC 引擎连接运行时状态（不持久化 localStorage）
   const setPcEngineConnected = useCallback((connected) => {
     dispatch({ type: 'SET_PC_ENGINE_CONNECTED', payload: !!connected })
-  }, [])
-  // Tailscale VPN 连接运行时状态（不持久化 localStorage）
-  const setTailscaleConnected = useCallback((connected) => {
-    dispatch({ type: 'SET_TAILSCALE_CONNECTED', payload: !!connected })
   }, [])
 
   const setVisionAiUrl = useCallback((url) => {
@@ -1530,7 +1511,6 @@ export function AppProvider({ children }) {
     setPaddleocrLanguage,
     setBaiduOcrApiKey,
     setBaiduOcrSecretKey,
-    setTailscaleAuthKey,
     setTesseractLanguage,
     setSpeechMode,
     setSpeechApiUrl,
@@ -1566,7 +1546,6 @@ export function AppProvider({ children }) {
     setPcEngineParseEngine,
     setPcEngineAsr,
     setPcEngineConnected,
-    setTailscaleConnected,
     setVisionAiUrl,
     setVisionAiKey,
     setVisionAiModel,

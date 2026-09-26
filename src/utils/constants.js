@@ -16,7 +16,7 @@ export const AI_SERVICE_MODES = [
   { value: 'iflytek-spark', label: '讯飞星火 (Spark)' },
   { value: 'volcano', label: '火山引擎 (豆包/Ark)' },
   { value: 'dashscope', label: '阿里云千问 (DashScope)' },
-  { value: 'pc-engine', label: 'PC 引擎 AI（通过 Tailscale）' },
+  { value: 'pc-engine', label: 'PC 引擎 AI' },
   { value: 'vision-ai', label: '通用AI (视觉专用)' },
 ]
 
@@ -222,7 +222,7 @@ export const SPEECH_MODES = [
   {
     value: 'pc-engine-voice',
     label: 'PC 引擎语音 (OpenLess)',
-    description: '通过 PC 端 OpenLess 实时语音识别，需在同一局域网或 Tailscale 远程连接',
+    description: '通过 PC 端 OpenLess 实时语音识别，需在同一局域网内',
   },
 ]
 

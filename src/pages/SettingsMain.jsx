@@ -45,13 +45,6 @@ const SETTINGS_CATEGORIES = [
     description: '连接 PC 端 OCR/AI 引擎，文档解析和实时语音输入',
     path: '/settings/pc-engine',
   },
-  {
-    id: 'tailscale',
-    icon: '🌐',
-    title: 'Tailscale VPN',
-    description: '通过 Tailscale 访问私有网络设备和服务',
-    path: '/settings/tailscale',
-  },
 ]
 
 const Arrow = () => (

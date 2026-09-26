@@ -81,7 +81,7 @@ export default function SettingsPcEngine() {
       } else {
         setTestResult({
           ok: false,
-          message: '连接失败，请检查 IP/Token 或 Tailscale 是否已连接',
+          message: '连接失败，请检查 IP/Token 是否正确',
         })
       }
     } catch (e) {
@@ -152,7 +152,7 @@ export default function SettingsPcEngine() {
 
           <div style={{ marginBottom: 12 }}>
             <label style={{ fontSize: 13, color: 'var(--color-text-muted)', display: 'block', marginBottom: 6 }}>
-              电脑 Tailscale IP / 域名
+              电脑 IP / 域名
             </label>
             <input
               className="input"
@@ -171,7 +171,7 @@ export default function SettingsPcEngine() {
               }}
             />
             <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 4 }}>
-              Tailscale IP 或域名
+              电脑 IP 或域名
             </div>
           </div>
 
@@ -362,10 +362,10 @@ export default function SettingsPcEngine() {
             📖 使用说明
           </div>
           <div style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.8 }}>
-            1. 确保手机和电脑都已连接 Tailscale<br/>
+            1. 确保手机和电脑在同一局域网（或系统 VPN）<br/>
             2. 电脑端启动 OCR 引擎管理台<br/>
             3. 在管理台「引擎配置」获取 Token<br/>
-            4. 填写电脑的 Tailscale IP 和 Token<br/>
+            4. 填写电脑的 IP 和 Token<br/>
             5. 点击「测试连接」验证<br/>
             6. 在功能页面使用 PC 引擎功能
           </div>

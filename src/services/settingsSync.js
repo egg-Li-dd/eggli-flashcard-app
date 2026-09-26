@@ -58,9 +58,6 @@ export const SYNCED_SETTING_KEYS = [
   'paddleocrServerUrl',
   'paddleocrLanguage',
   // PaddleOCR Token / Baidu OCR Key/Secret 不同步（敏感）
-  'tailscaleAuthKey',
-  // Tailscale 自动连接开关
-  'tailscaleAutoConnect',
   // PC 引擎代理配置（包含 host、token、引擎选择等，作为 JSON 对象整体同步）
   'pcEngineConfig',
 ]

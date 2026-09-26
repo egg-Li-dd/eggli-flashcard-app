@@ -102,7 +102,6 @@ export default function CloudData() {
     setOcrEngine,
     setPaddleocrServerUrl,
     setPaddleocrLanguage,
-    setTailscaleAuthKey,
     setUserProfile,
     loadUserProfile,
   } = useApp()
@@ -354,15 +353,12 @@ export default function CloudData() {
                 dashscopeApiKey: setDashscopeApiKey, dashscopeModel: setDashscopeModel,
                 ocrAutoGenerate: setOcrAutoGenerate, ocrEngine: setOcrEngine,
                 paddleocrServerUrl: setPaddleocrServerUrl, paddleocrLanguage: setPaddleocrLanguage,
-                tailscaleAuthKey: setTailscaleAuthKey,
               }
               for (const [k, v] of Object.entries(extracted)) {
                 if (setterMap[k]) {
                   setterMap[k](v)
                 } else if (k === 'pcEngineConfig' && typeof v === 'object') {
                   localStorage.setItem('pc_engine_config', JSON.stringify(v))
-                } else if (k === 'tailscaleAutoConnect' && typeof v === 'boolean') {
-                  localStorage.setItem('tailscale_auto_connect', v ? 'true' : 'false')
                 }
               }
             }
@@ -508,15 +504,12 @@ export default function CloudData() {
                 dashscopeApiKey: setDashscopeApiKey, dashscopeModel: setDashscopeModel,
                 ocrAutoGenerate: setOcrAutoGenerate, ocrEngine: setOcrEngine,
                 paddleocrServerUrl: setPaddleocrServerUrl, paddleocrLanguage: setPaddleocrLanguage,
-                tailscaleAuthKey: setTailscaleAuthKey,
               }
               for (const [k, v] of Object.entries(extracted)) {
                 if (setterMap[k]) {
                   setterMap[k](v)
                 } else if (k === 'pcEngineConfig' && typeof v === 'object') {
                   localStorage.setItem('pc_engine_config', JSON.stringify(v))
-                } else if (k === 'tailscaleAutoConnect' && typeof v === 'boolean') {
-                  localStorage.setItem('tailscale_auto_connect', v ? 'true' : 'false')
                 }
               }
               showToast(item.name + '下载成功', 'success')

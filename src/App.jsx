@@ -14,7 +14,6 @@ import SettingsBackground from './pages/SettingsBackground'
 
 import SettingsDeveloper from './pages/SettingsDeveloper'
 import SettingsPcEngine from './pages/SettingsPcEngine'
-import SettingsTailscale from './pages/SettingsTailscale'
 import Memorize from './pages/Memorize'
 import StudyPlan from './pages/StudyPlan'
 import UnitTestMain from './pages/UnitTestMain'
@@ -142,7 +141,7 @@ function RequireAuth({ children }) {
 }
 
 function AppShell() {
-  const { state, showToast, setPcEngineConnected, setTailscaleConnected } = useApp()
+  const { state, showToast, setPcEngineConnected } = useApp()
   const navigate = useNavigate()
   const location = useLocation()
   const backPressedRef = useRef(0)
@@ -299,42 +298,6 @@ function AppShell() {
     }
   }, [])
 
-  // Tailscale VPN 自动连接：应用启动时如果用户已开启"启动时自动连接"，自动恢复引擎
-  useEffect(function () {
-    const autoConnect = localStorage.getItem('tailscale_auto_connect') === 'true'
-    if (!autoConnect) return
-
-    const isNative = typeof window !== 'undefined' &&
-      (window.Capacitor?.getPlatform?.() !== 'web')
-    if (!isNative) return
-
-    let cancelled = false
-    const timer = setTimeout(async () => {
-      try {
-        const { isAvailable, start, getStatus } = await import('./services/tailscale')
-        // 先检查引擎是否已在运行
-        const available = await isAvailable()
-        if (available?.running) {
-          const status = await getStatus()
-          if (status) {
-            // 引擎已运行，检查是否需要恢复隧道
-            const backendState = status.BackendState || status.backendState
-            if (backendState === 'Running' || backendState === 'Stopped') {
-              return // 一切正常
-            }
-          }
-        }
-        // 引擎未运行或状态异常，调用 start() 恢复（携带已保存的 Auth Key）
-        const savedAuthKey = localStorage.getItem('tailscale_auth_key') || ''
-        await start(savedAuthKey || undefined)
-      } catch (e) {
-        console.warn('[Tailscale AutoConnect] 恢复失败:', e)
-      }
-    }, 3000) // 延迟 3 秒，等应用完全启动
-
-    return () => { cancelled = true; clearTimeout(timer) }
-  }, [])
-
   // PC 引擎自动连接：启动时检测配置并连接
   useEffect(function () {
     console.log('[PC引擎] 自动连接检查启动')
@@ -369,7 +332,7 @@ function AppShell() {
           const res = await fetch(baseUrl + '/api/health', { method: 'GET', signal: AbortSignal.timeout(5000) })
           if (res.ok) connected = true
         } catch (_) {}
-        // 方式2：fetchViaTailscale（走 Tailscale 原生 netstack）
+        // 方式2：pcEngine.healthCheck（标准 fetch）
         if (!connected) {
           try {
             const { healthCheck } = await import('./services/pcEngine')
@@ -409,14 +372,13 @@ function AppShell() {
 
     const timer = setTimeout(tryConnect, 5000)
 
-    // 心跳检测（10 秒间隔）：独立检测 PC 引擎和 Tailscale 状态
-    // 无论 PC 引擎是否连接成功都启动，确保 Tailscale 状态也能被监测
+    // 心跳检测（10 秒间隔）：监测 PC 引擎连接状态
     let heartbeatTimer = null
     let heartbeatImmediate = null
 
     const doHeartbeat = async () => {
       if (pcCancelled) return
-      // PC 引擎心跳：同时尝试直连 fetch 和 Tailscale fetchViaTailscale
+      // PC 引擎心跳：同时尝试直连 fetch 和 pcEngine.healthCheck
       // 任一成功即视为已连接
       try {
         const configStr = localStorage.getItem('pc_engine_config')
@@ -431,7 +393,7 @@ function AppShell() {
               const res = await fetch(baseUrl + '/api/health', { method: 'GET', signal: AbortSignal.timeout(5000) })
               if (res.ok) connected = true
             } catch (_) {}
-            // 方式2：fetchViaTailscale（走 Tailscale 原生 netstack）
+            // 方式2：pcEngine.healthCheck（标准 fetch）
             if (!connected) {
               try {
                 const { healthCheck } = await import('./services/pcEngine')
@@ -445,27 +407,6 @@ function AppShell() {
       } catch (_) {
         setPcEngineConnected(false)
       }
-      // Tailscale 状态检测 + 自动重连
-      try {
-        const { isAvailable, up } = await import('./services/tailscale')
-        const avail = await isAvailable()
-        const connected = !!(avail && avail.running)
-        if (!connected && avail && avail.available !== false) {
-          // 已安装但未运行，尝试自动重连
-          try {
-            await up()
-            console.log('[Tailscale] 自动重连成功')
-            setTailscaleConnected(true)
-          } catch (reconnectErr) {
-            console.warn('[Tailscale] 自动重连失败:', reconnectErr.message)
-            setTailscaleConnected(false)
-          }
-        } else {
-          setTailscaleConnected(connected)
-        }
-      } catch (_) {
-        setTailscaleConnected(false)
-      }
     }
 
     const startHeartbeat = () => {
@@ -475,7 +416,7 @@ function AppShell() {
       heartbeatImmediate = setTimeout(doHeartbeat, 1000)
     }
 
-    // 立即启动心跳（不管 PC 引擎是否连上），确保 Tailscale 状态被监测
+    // 立即启动心跳，尽早发现 PC 引擎状态变化
     startHeartbeat()
 
     return () => {
@@ -513,7 +454,6 @@ function AppShell() {
           
           <Route path="/settings/developer" element={<SettingsDeveloper />} />
           <Route path="/settings/pc-engine" element={<SettingsPcEngine />} />
-          <Route path="/settings/tailscale" element={<SettingsTailscale />} />
           <Route path="/category/:id" element={<RequireAuth><Category /></RequireAuth>} />
           <Route path="/stats/:type" element={<RequireAuth><StatsDetail /></RequireAuth>} />
           <Route path="/stats/longterm" element={<RequireAuth><StatsLongTerm /></RequireAuth>} />

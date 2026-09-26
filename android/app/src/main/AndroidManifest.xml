@@ -36,28 +36,6 @@
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
 
-        <!-- Tailscale 引擎服务（与 VpnService 在同一进程中，使 JNI 调用可用） -->
-        <service
-            android:name=".services.TailscaleRemoteService"
-            android:exported="false" />
-
-        <!-- Tailscale VPN 服务（继承 VpnService，实现 IPNService 接口） -->
-        <!-- 必须在主进程中运行，否则 VpnService.Builder.establish() 会失败 -->
-        <service
-            android:name=".services.TailscaleVPNService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse"
-            android:permission="android.permission.BIND_VPN_SERVICE">
-            <intent-filter>
-                <action android:name="android.net.VpnService" />
-                <action android:name="com.eggli.flashcards.START_VPN" />
-                <action android:name="com.eggli.flashcards.STOP_VPN" />
-            </intent-filter>
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="tailscale_vpn_tunnel" />
-        </service>
-
         <!-- 系统悬浮窗前台服务（承载 WindowManager.addView） -->
         <service
             android:name=".services.SystemFloatingWindowService"
@@ -77,7 +55,6 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_VPN" />
     <!-- Android 13+ 通知权限 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 系统悬浮窗权限（Android 6.0+ 需运行时引导用户授权） -->

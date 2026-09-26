@@ -1,15 +1,12 @@
 /**
  * PC 引擎服务封装层
  *
- * 通过 Tailscale 网络栈访问电脑端 OCR 引擎管理台（端口 19000）。
+ * 访问电脑端 OCR 引擎管理台（端口 19000）。
  * 支持文档解析、图片OCR、VQA、文件转写、实时语音识别等。
  *
- * 依赖：
- * - tailscale.js 的 fetchViaTailscale（HTTP 请求走 Tailscale netstack）
- * - tailscale.js 的 createTailscaleWebSocket（WebSocket 代理走 Tailscale netstack）
+ * 说明：原先支持经 Tailscale netstack 请求，Tailscale 模块已下线，
+ * 现统一走标准 fetch（系统网络，可走系统 VPN/局域网）。
  */
-
-import { fetchViaTailscale } from './tailscale'
 
 // ─────────── 配置管理 ───────────
 
@@ -83,7 +80,26 @@ function getToken() {
 }
 
 /**
- * 通过 Tailscale 发起 HTTP 请求到 PC 引擎
+ * 发起 HTTP 请求到 PC 引擎（标准 fetch + 超时）
+ * 返回 { statusCode, body } 形状，与原实现保持兼容
+ */
+async function pcRequest(url, { method = 'GET', headers = {}, body = '', timeout = 60000 } = {}) {
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: body || undefined,
+      signal: AbortSignal.timeout(timeout),
+    })
+    const text = await res.text()
+    return { statusCode: res.status, body: text }
+  } catch (e) {
+    return { statusCode: 0, body: e?.message || '网络请求失败' }
+  }
+}
+
+/**
+ * 发起 HTTP 请求到 PC 引擎
  */
 async function pcFetch(path, options = {}) {
   const baseUrl = getBaseUrl()
@@ -96,7 +112,7 @@ async function pcFetch(path, options = {}) {
     headers['Content-Type'] = 'application/json'
   }
 
-  const result = await fetchViaTailscale(url, {
+  const result = await pcRequest(url, {
     method: options.method || 'GET',
     headers,
     body: options.body || '',
@@ -111,8 +127,7 @@ async function pcFetch(path, options = {}) {
 }
 
 /**
- * 通过 Tailscale 发起 multipart/form-data 文件上传
- * 由于 fetchViaTailscale 只支持字符串 body，这里用 base64 传输文件
+ * 发起 multipart/form-data 文件上传
  */
 async function pcFetchWithFile(path, file, fieldName = 'file', extraFields = {}) {
   const baseUrl = getBaseUrl()
@@ -137,7 +152,7 @@ async function pcFetchWithFile(path, file, fieldName = 'file', extraFields = {})
   body += `${base64Data}\r\n`
   body += `--${boundary}--\r\n`
 
-  const result = await fetchViaTailscale(url, {
+  const result = await pcRequest(url, {
     method: 'POST',
     headers: {
       'Content-Type': `multipart/form-data; boundary=${boundary}`,
@@ -189,7 +204,7 @@ function parseJson(result) {
 export async function healthCheck() {
   try {
     const baseUrl = getBaseUrl()
-    const result = await fetchViaTailscale(`${baseUrl}/api/health`, {
+    const result = await pcRequest(`${baseUrl}/api/health`, {
       method: 'GET',
       timeout: 10000,
     })
@@ -398,140 +413,6 @@ export async function transcribeAudio(file, engine) {
       return funasrRecognize(file)
     default:
       throw new Error(`不支持的转写引擎: ${engine}`)
-  }
-}
-
-// ─────────── 六、实时语音识别（WebSocket） ───────────
-
-/**
- * WebSocket 实时语音识别（通过 Tailscale）
- *
- * 通过 Capacitor 原生插件建立 WebSocket 连接，使用轮询方式接收消息。
- *
- * @param {object} callbacks - 回调函数集合
- * @param {() => void} callbacks.onReady - 连接就绪
- * @param {(text: string) => void} callbacks.onPartial - 部分识别结果
- * @param {(text: string) => void} callbacks.onResult - 最终识别结果
- * @param {(msg: string) => void} callbacks.onError - 错误
- * @param {() => void} callbacks.onClose - 连接关闭
- * @param {(value: number) => void} [callbacks.onLevel] - 音量反馈
- * @param {string} [asrEngine] - asr 引擎：voice / sherpa / whisper / funasr
- * @returns {Promise<object>} WebSocket 控制器 { sendAudio, stop, cancel, close }
- */
-export async function startRealtimeASR(callbacks, asrEngine) {
-  const { Capacitor } = await import('@capacitor/core')
-  if (!Capacitor.isNativePlatform()) {
-    throw new Error('实时语音识别仅支持 Android APP')
-  }
-
-  const config = getPcEngineConfig()
-  const baseUrl = getBaseUrl()
-  const wsUrl = baseUrl.replace(/^http/, 'ws')
-  const engine = asrEngine || config.asrEngine || 'sherpa'
-  const token = getToken()
-  const fullWsUrl = `${wsUrl}/api/${engine}/ws`
-
-  const plugin = Capacitor.Plugins?.TailscaleVPN
-  if (!plugin) {
-    throw new Error('Tailscale 插件不可用')
-  }
-
-  // 调用原生插件建立 WebSocket 连接
-  const conn = await plugin.createTailscaleWebSocket({
-    url: fullWsUrl,
-  })
-
-  const connId = conn.connId
-  let polling = true
-
-  // 轮询消息
-  const pollLoop = async () => {
-    while (polling) {
-      try {
-        const result = await plugin.pollTailscaleWsMessage({ connId })
-        if (result.hasMessage) {
-          if (result.type === 'text') {
-            try {
-              const msg = JSON.parse(result.data)
-              switch (msg.type) {
-                case 'ready':
-                  callbacks.onReady?.()
-                  break
-                case 'partial':
-                  callbacks.onPartial?.(msg.text || '')
-                  break
-                case 'result':
-                  callbacks.onResult?.(msg.text || '')
-                  break
-                case 'level':
-                  callbacks.onLevel?.(msg.value || 0)
-                  break
-                case 'error':
-                  callbacks.onError?.(msg.message || '未知错误')
-                  break
-                case 'closed':
-                  polling = false
-                  callbacks.onClose?.()
-                  return
-              }
-            } catch (e) {
-              // 非 JSON 文本消息，忽略
-            }
-          } else if (result.type === 'closed') {
-            polling = false
-            callbacks.onClose?.()
-            return
-          }
-        }
-      } catch (e) {
-        // 轮询出错，等待后继续
-      }
-      // 50ms 轮询间隔
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
-  }
-
-  // 启动轮询
-  pollLoop()
-
-  return {
-    connId,
-    /** 发送 PCM 音频数据（16k/mono/16-bit LE） */
-    sendAudio(pcmData) {
-      // 将 ArrayBuffer 转为 base64
-      const bytes = new Uint8Array(pcmData)
-      let binary = ''
-      for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i])
-      }
-      const base64 = btoa(binary)
-      plugin.sendTailscaleWsData({ connId, data: base64, binary: true })
-    },
-    /** 发送控制消息 */
-    sendControl(type) {
-      plugin.sendTailscaleWsData({
-        connId,
-        data: JSON.stringify({ type }),
-        binary: false,
-      })
-    },
-    /** 开始录音 */
-    start() {
-      this.sendControl('start')
-    },
-    /** 停止录音 */
-    stop() {
-      this.sendControl('stop')
-    },
-    /** 取消录音 */
-    cancel() {
-      this.sendControl('cancel')
-    },
-    /** 关闭连接 */
-    close() {
-      polling = false
-      plugin.closeTailscaleWebSocket({ connId })
-    },
   }
 }
 

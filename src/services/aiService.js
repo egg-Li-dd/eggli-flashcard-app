@@ -36,10 +36,9 @@ import { DEEPSEEK_API_URL, IFLYTEK_SPARK_API_URL, VOLCANO_ENGINE_API_URL, DASHSC
 import { httpPost } from '../utils/httpClient'
 import { normalizeSparkApiPassword } from '../utils/sparkAuth'
 import { logAiCall, resolveModelName } from './aiCallLog'
-import { extractTextWithPaddleOcr } from './paddleOcr'
+import { extractTextWithPaddleOcrLocal } from './paddleOcrLocal'
 import { extractTextWithBaiduOcr } from './baiduOcr'
 
-import { extractTextWithPaddleOcrLocal } from './paddleOcrLocal'
 import { extractTextWithTesseract } from './tesseractOcr'
 import { aiChatCompletion } from './pcEngineProxy'
 import { checkPcEngineAvailable } from './pcEngineFallback'
@@ -564,12 +563,13 @@ export async function generateCards(text, apiKey, model, aiServiceMode, summaryL
 
 export async function extractTextFromImage(base64Image, apiKey, aiServiceMode, model, sparkApiKey, sparkApiSecret, volcanoApiKey, dashscopeApiKey, ocrOptions = {}, visionAiOptions = {}) {
   const startTime = Date.now()
-  // ocrOptions: { ocrEngine, paddleocrServerUrl, paddleocrApiToken, paddleocrLanguage, baiduOcrApiKey, baiduOcrSecretKey }
+  // ocrOptions: { ocrEngine, baiduOcrApiKey, baiduOcrSecretKey }（自建 PaddleOCR 服务已下线，旧值 paddleocr-server 回退 ai-model）
   // visionAiOptions: { visionAiUrl, visionAiKey, visionAiModel } — 当配置了独立通用AI视觉时优先使用
-  const ocrEngine = ocrOptions.ocrEngine || 'ai-model'
+  // 自建 PaddleOCR 服务已下线：旧配置值回退到 AI 大模型视觉
+  const ocrEngineRaw = ocrOptions.ocrEngine || 'ai-model'
+  const ocrEngine = ocrEngineRaw === 'paddleocr-server' ? 'ai-model' : ocrEngineRaw
   const engineLabel =
     ocrEngine === 'tesseract-js' ? 'Tesseract.js' :
-    ocrEngine === 'paddleocr-server' ? 'PaddleOCR' :
     ocrEngine === 'paddleocr-local' ? 'PaddleOCR-Local' :
     ocrEngine === 'baidu-cloud' ? 'BaiduCloudOCR' :
     getModelName(aiServiceMode, model)
@@ -605,37 +605,6 @@ export async function extractTextFromImage(base64Image, apiKey, aiServiceMode, m
   if (ocrEngine === 'paddleocr-local') {
     try {
       const result = await extractTextWithPaddleOcrLocal(base64Image)
-      logAiCall({
-        purpose: 'image-ocr',
-        modelName: engineLabel,
-        durationMs: Date.now() - startTime,
-        status: 'success',
-        tokens: result.tokens || 0,
-        prompt: '(图片 base64, 长度: ' + (base64Image?.length || 0) + ')',
-        response: result.content,
-      })
-      return result.content
-    } catch (err) {
-      logAiCall({
-        purpose: 'image-ocr',
-        modelName: engineLabel,
-        durationMs: Date.now() - startTime,
-        status: 'error',
-        errorMessage: err?.message || '未知错误',
-        prompt: '(图片 base64, 长度: ' + (base64Image?.length || 0) + ')',
-        response: '',
-      })
-      throw err
-    }
-  }
-  if (ocrEngine === 'paddleocr-server') {
-    try {
-      const result = await extractTextWithPaddleOcr(
-        base64Image,
-        ocrOptions.paddleocrServerUrl,
-        ocrOptions.paddleocrApiToken,
-        ocrOptions.paddleocrLanguage,
-      )
       logAiCall({
         purpose: 'image-ocr',
         modelName: engineLabel,

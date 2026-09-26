@@ -2344,9 +2344,6 @@ export default function Category() {
         let tip = ''
         if (ocrEngine === 'paddleocr-local') {
           hasCreds = true
-        } else if (ocrEngine === 'paddleocr-server') {
-          hasCreds = !!state.paddleocrServerUrl
-          if (!hasCreds) tip = '请先在「设置 → 图像识别」中配置 PaddleOCR 服务地址'
         } else if (ocrEngine === 'baidu-cloud') {
           hasCreds = !!(state.baiduOcrApiKey && state.baiduOcrSecretKey)
           if (!hasCreds) tip = '请先在「设置 → 图像识别」中配置百度智能云 OCR 的 API Key 和 Secret Key'
@@ -2410,7 +2407,7 @@ export default function Category() {
         }
       }
     },
-    [state.aiServiceMode, state.apiKey, state.iflytekSparkApiKey, state.iflytekSparkModel, state.volcanoApiKey, state.volcanoModel, state.dashscopeApiKey, state.dashscopeModel, state.model, state.ocrEngine, state.paddleocrServerUrl, state.paddleocrApiToken, state.paddleocrLanguage, state.baiduOcrApiKey, state.baiduOcrSecretKey, state.tesseractLanguage, showToast, handleGenerate]
+    [state.aiServiceMode, state.apiKey, state.iflytekSparkApiKey, state.iflytekSparkModel, state.volcanoApiKey, state.volcanoModel, state.dashscopeApiKey, state.dashscopeModel, state.model, state.ocrEngine, state.baiduOcrApiKey, state.baiduOcrSecretKey, state.tesseractLanguage, showToast, handleGenerate]
   )
 
   const handleAudioRecord = useCallback(async (transcript) => {

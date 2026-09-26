@@ -445,7 +445,6 @@ export default function CloudDataDetail() {
     setDashscopeModel,
     setOcrAutoGenerate,
     setOcrEngine,
-    setPaddleocrServerUrl,
     setPaddleocrLanguage,
     setUserProfile,
   } = useApp()
@@ -609,7 +608,6 @@ export default function CloudDataDetail() {
           volcanoApiKey: setVolcanoApiKey, volcanoModel: setVolcanoModel,
           dashscopeApiKey: setDashscopeApiKey, dashscopeModel: setDashscopeModel,
           ocrAutoGenerate: setOcrAutoGenerate, ocrEngine: setOcrEngine,
-          paddleocrServerUrl: setPaddleocrServerUrl, paddleocrLanguage: setPaddleocrLanguage,
         }
         for (const [k, v] of Object.entries(extracted)) {
           if (setterMap[k]) {

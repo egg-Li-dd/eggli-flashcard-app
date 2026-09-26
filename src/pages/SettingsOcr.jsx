@@ -1,9 +1,8 @@
 import { useApp } from '../context/AppContext'
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { OCR_ENGINES, PADDLEOCR_LANGUAGES } from '../utils/constants'
+import { OCR_ENGINES } from '../utils/constants'
 import { TESSERACT_LANGUAGES, getTesseractOcrStatus, releaseTesseractWorker, testTesseractOcrConnection } from '../services/tesseractOcr'
-import { testPaddleOcrConnection } from '../services/paddleOcr'
 import { testBaiduOcrConnection } from '../services/baiduOcr'
 import { testPaddleOcrLocalConnection, getPaddleOcrLocalStatus, diagnosePaddleOcrLocal } from '../services/paddleOcrLocal'
 import { testVisionAiConnection } from '../services/visionAi'
@@ -26,9 +25,6 @@ export default function SettingsOcr() {
     state,
     setOcrEngine,
     setOcrAutoGenerate,
-    setPaddleocrServerUrl,
-    setPaddleocrApiToken,
-    setPaddleocrLanguage,
     setBaiduOcrApiKey,
     setBaiduOcrSecretKey,
     setTesseractLanguage,
@@ -40,16 +36,11 @@ export default function SettingsOcr() {
   const navigate = useNavigate()
 
   // 本地编辑态（避免每次输入都触发全局 state）
-  const [localServerUrl, setLocalServerUrl] = useState(state.paddleocrServerUrl || '')
-  const [localApiToken, setLocalApiToken] = useState(state.paddleocrApiToken || '')
-  const [localApiTokenShow, setLocalApiTokenShow] = useState(false)
   const [localBaiduAk, setLocalBaiduAk] = useState(state.baiduOcrApiKey || '')
   const [localBaiduSk, setLocalBaiduSk] = useState(state.baiduOcrSecretKey || '')
   const [localBaiduSkShow, setLocalBaiduSkShow] = useState(false)
 
   // 测试态
-  const [paddleTestTesting, setPaddleTestTesting] = useState(false)
-  const [paddleTestStatus, setPaddleTestStatus] = useState(null)
   const [baiduTestTesting, setBaiduTestTesting] = useState(false)
   const [baiduTestStatus, setBaiduTestStatus] = useState(null)
   // PaddleOCR 离线模式
@@ -137,9 +128,6 @@ export default function SettingsOcr() {
         state.dashscopeApiKey,
         {
           ocrEngine: engine,
-          paddleocrServerUrl: state.paddleocrServerUrl,
-          paddleocrApiToken: state.paddleocrApiToken,
-          paddleocrLanguage: state.paddleocrLanguage,
           baiduOcrApiKey: state.baiduOcrApiKey,
           baiduOcrSecretKey: state.baiduOcrSecretKey,
           tesseractLanguage: state.tesseractLanguage,
@@ -219,46 +207,10 @@ export default function SettingsOcr() {
     showToast('图像识别引擎已切换为：' + next.label)
   }
 
-  const handleLanguageSwitch = () => {
-    const idx = PADDLEOCR_LANGUAGES.findIndex((m) => m.value === state.paddleocrLanguage)
-    const next = PADDLEOCR_LANGUAGES[(idx + 1) % PADDLEOCR_LANGUAGES.length]
-    setPaddleocrLanguage(next.value)
-    showToast('PaddleOCR 语言已切换为：' + next.label)
-  }
-
-  const handleSavePaddleocr = () => {
-    setPaddleocrServerUrl(localServerUrl.trim())
-    setPaddleocrApiToken(localApiToken.trim())
-    showToast('PaddleOCR 配置已保存', 'success')
-  }
-
   const handleSaveBaidu = () => {
     setBaiduOcrApiKey(localBaiduAk.trim())
     setBaiduOcrSecretKey(localBaiduSk.trim())
     showToast('百度智能云 OCR 配置已保存', 'success')
-  }
-
-  const handleTestPaddleocr = async () => {
-    if (!localServerUrl.trim()) {
-      showToast('请先填写 PaddleOCR 服务地址', 'warn')
-      return
-    }
-    // 先保存再测试
-    setPaddleocrServerUrl(localServerUrl.trim())
-    setPaddleocrApiToken(localApiToken.trim())
-    setPaddleTestTesting(true)
-    setPaddleTestStatus(null)
-    try {
-      const result = await testPaddleOcrConnection(localServerUrl.trim(), localApiToken.trim())
-      setPaddleTestStatus(result)
-      showToast(result.ok ? `✅ ${result.message}` : `❌ ${result.message}`, result.ok ? 'success' : 'error')
-    } catch (e) {
-      const fail = { ok: false, message: '测试失败：' + (e?.message || '未知错误') }
-      setPaddleTestStatus(fail)
-      showToast(`❌ ${fail.message}`, 'error')
-    } finally {
-      setPaddleTestTesting(false)
-    }
   }
 
   const handleTestBaidu = async () => {
@@ -663,95 +615,6 @@ export default function SettingsOcr() {
           </div>
         </div>
 
-
-        {/* PaddleOCR 自建服务配置 */}
-        {state.ocrEngine === 'paddleocr-server' && (
-          <div className="settings-section">
-            <h3 className="settings-section-title">PaddleOCR 自建服务</h3>
-            <div className="settings-block">
-              <div style={{
-                padding: '12px',
-                borderRadius: '8px',
-                backgroundColor: 'var(--color-bg-secondary)',
-                marginBottom: '12px',
-                fontSize: 12,
-                lineHeight: 1.6,
-                color: 'var(--color-text-secondary)',
-              }}>
-                <p style={{ margin: '0 0 6px 0' }}>✅ <strong>完全免费开源</strong>：基于百度 PaddleOCR（Apache 2.0）</p>
-                <p style={{ margin: '0 0 6px 0' }}>🏠 <strong>自托管</strong>：需在本机或服务器运行 Python 服务</p>
-                <p style={{ margin: 0 }}>📦 服务脚本：<code style={{ fontSize: 11 }}>paddleocr_server/server.py</code></p>
-              </div>
-
-              <label className="settings-label">服务地址</label>
-              <input
-                className="settings-input settings-mb-8"
-                type="text"
-                inputMode="url"
-                autoCapitalize="none"
-                autoCorrect="off"
-                placeholder="http://192.168.1.100:8000"
-                value={localServerUrl}
-                onChange={(e) => setLocalServerUrl(e.target.value)}
-                onBlur={() => setPaddleocrServerUrl(localServerUrl.trim())}
-              />
-
-              <label className="settings-label">语言模型</label>
-              <div className="settings-row settings-row-clickable card-interactive" onClick={handleLanguageSwitch} style={{ marginBottom: 10 }}>
-                <span className="settings-row-label">语言</span>
-                <span className="settings-row-value">
-                  {PADDLEOCR_LANGUAGES.find((l) => l.value === state.paddleocrLanguage)?.label || '中英文（默认）'}
-                </span>
-                <Arrow />
-              </div>
-
-              <label className="settings-label">API Token（可选）</label>
-              <div style={{ position: 'relative', marginBottom: 8 }}>
-                <input
-                  className="settings-input settings-input-eye"
-                  type={localApiTokenShow ? 'text' : 'password'}
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  placeholder="留空表示无需鉴权"
-                  value={localApiToken}
-                  onChange={(e) => setLocalApiToken(e.target.value)}
-                  onBlur={() => setPaddleocrApiToken(localApiToken.trim())}
-                />
-                <button
-                  type="button"
-                  className="settings-eye-btn"
-                  onClick={() => setLocalApiTokenShow((v) => !v)}
-                  aria-label={localApiTokenShow ? '隐藏' : '显示'}
-                >
-                  {localApiTokenShow ? '🙈' : '👁'}
-                </button>
-              </div>
-
-              <div className="settings-btn-row" style={{ marginTop: 12 }}>
-                <button onClick={handleSavePaddleocr} className="settings-btn-sm" disabled={paddleTestTesting}>
-                  保存配置
-                </button>
-                <button
-                  onClick={handleTestPaddleocr}
-                  className="settings-btn-sm"
-                  style={{ background: 'var(--color-primary)', color: '#fff' }}
-                  disabled={paddleTestTesting}
-                >
-                  {paddleTestTesting ? '测试中…' : '测试连接'}
-                </button>
-              </div>
-              {paddleTestStatus && (
-                <div className="settings-status" style={{
-                  marginTop: 10,
-                  backgroundColor: paddleTestStatus.ok ? 'var(--color-success-light)' : 'var(--color-danger-light)',
-                  color: paddleTestStatus.ok ? 'var(--color-success-dark)' : 'var(--color-danger)',
-                }}>
-                  <span>{paddleTestStatus.ok ? '✅' : '❌'} {paddleTestStatus.message}</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
         {/* 百度智能云 OCR 配置 */}
         {state.ocrEngine === 'baidu-cloud' && (

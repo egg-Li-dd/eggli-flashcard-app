@@ -113,9 +113,6 @@ export const STORAGE_KEYS = {
   OCR_AUTO_GENERATE: 'ocr_auto_generate',
   // 图像识别引擎选择与配置
   OCR_ENGINE: 'ocr_engine',
-  PADDLEOCR_SERVER_URL: 'paddleocr_server_url',
-  PADDLEOCR_API_TOKEN: 'paddleocr_api_token',
-  PADDLEOCR_LANGUAGE: 'paddleocr_language',
   BAIDU_OCR_API_KEY: 'baidu_ocr_api_key',
   BAIDU_OCR_SECRET_KEY: 'baidu_ocr_secret_key',
   TESSERACT_LANGUAGE: 'tesseract_language',
@@ -155,22 +152,10 @@ export const OCR_ENGINES = [
     description: '使用当前 AI 服务（DeepSeek/星火/火山/千问）的多模态视觉能力识别图片文字，按 token 计费',
   },
   {
-    value: 'paddleocr-server',
-    label: 'PaddleOCR 自建服务 (免费开源)',
-    description: '调用自建的 PaddleOCR HTTP 服务，完全免费、隐私自托管，需自行部署 Python 服务',
-  },
-  {
     value: 'baidu-cloud',
     label: '百度智能云 OCR (备选)',
     description: '调用百度智能云通用文字识别（基于 PaddleOCR 商业版），每月免费 1000 次，超出按次计费',
   },
-]
-
-// PaddleOCR 支持的语言模型
-export const PADDLEOCR_LANGUAGES = [
-  { value: 'ch', label: '中英文（默认）' },
-  { value: 'en', label: '英文' },
-  { value: 'multilingual', label: '多语种（法、德、日、韩等）' },
 ]
 
 export const SPEECH_MODES = [

@@ -107,9 +107,6 @@ export async function ocrWithFallback(file, state, showToast) {
   const base64 = await compressImageForOcr(file)
   const ocrOptions = {
     ocrEngine,
-    paddleocrServerUrl: state.paddleocrServerUrl,
-    paddleocrApiToken: state.paddleocrApiToken,
-    paddleocrLanguage: state.paddleocrLanguage,
     baiduOcrApiKey: state.baiduOcrApiKey,
     baiduOcrSecretKey: state.baiduOcrSecretKey,
     tesseractLanguage: state.tesseractLanguage || 'chi_sim+eng',

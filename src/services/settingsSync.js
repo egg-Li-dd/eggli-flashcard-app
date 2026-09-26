@@ -24,8 +24,8 @@
  *  - 阿里云千问模型 (dashscopeModel)
  *  - OCR 自动生成卡片开关 (ocrAutoGenerate)
  *  - 图像识别引擎配置 (ocrEngine)
- *  - PaddleOCR 服务 URL (paddleocrServerUrl)
- *  - PaddleOCR 语言 (paddleocrLanguage)
+
+
  *
  * 策略：云端优先，本地降级。
  */
@@ -55,8 +55,6 @@ export const SYNCED_SETTING_KEYS = [
   // 阿里云 DashScope API Key 不同步（敏感）
   'ocrAutoGenerate',
   'ocrEngine',
-  'paddleocrServerUrl',
-  'paddleocrLanguage',
   // PaddleOCR Token / Baidu OCR Key/Secret 不同步（敏感）
   // PC 引擎代理配置（包含 host、token、引擎选择等，作为 JSON 对象整体同步）
   'pcEngineConfig',

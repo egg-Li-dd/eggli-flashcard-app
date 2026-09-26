@@ -100,7 +100,6 @@ export default function CloudData() {
     setDashscopeModel,
     setOcrAutoGenerate,
     setOcrEngine,
-    setPaddleocrServerUrl,
     setPaddleocrLanguage,
     setUserProfile,
     loadUserProfile,
@@ -352,7 +351,6 @@ export default function CloudData() {
                 volcanoApiKey: setVolcanoApiKey, volcanoModel: setVolcanoModel,
                 dashscopeApiKey: setDashscopeApiKey, dashscopeModel: setDashscopeModel,
                 ocrAutoGenerate: setOcrAutoGenerate, ocrEngine: setOcrEngine,
-                paddleocrServerUrl: setPaddleocrServerUrl, paddleocrLanguage: setPaddleocrLanguage,
               }
               for (const [k, v] of Object.entries(extracted)) {
                 if (setterMap[k]) {
@@ -503,7 +501,6 @@ export default function CloudData() {
                 volcanoApiKey: setVolcanoApiKey, volcanoModel: setVolcanoModel,
                 dashscopeApiKey: setDashscopeApiKey, dashscopeModel: setDashscopeModel,
                 ocrAutoGenerate: setOcrAutoGenerate, ocrEngine: setOcrEngine,
-                paddleocrServerUrl: setPaddleocrServerUrl, paddleocrLanguage: setPaddleocrLanguage,
               }
               for (const [k, v] of Object.entries(extracted)) {
                 if (setterMap[k]) {

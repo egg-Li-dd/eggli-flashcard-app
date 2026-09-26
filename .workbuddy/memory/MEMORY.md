@@ -14,7 +14,18 @@
 - 基线提交 `744f166`「清理前基线快照 v2.1」：**525 文件 / 33.8 MB / 密钥命中 0**；远端 `main` = `b92ae18`（合并提交在上）
 - **`.gitignore` 已加固**：排除 `dist/`、`android/app/build`、`.gradle`、`android/app/src/main/assets/`（Capacitor 同步产物）、`*.aar`/`*.apk`、`.env`、keystore、根目录 `*.mjs` 运维脚本（**15 个脚本含明文 `service_role` 密钥**，必须保持排除）
 - **推送必须走本地 git 直推，不要用 MCP 的 `publish_local_project`**（`/git/trees` 稳定 403）。四个必须项：本机代理 `127.0.0.1:65532`、`-c http.sslVerify=false`、`-c credential.helper="store --file=<Windows 路径>"` 注入令牌（`git credential fill` 可取到 `gho_` OAuth）、`GIT_TERMINAL_PROMPT=0`
+- **⚠️ 推送配方 2026-09-26 重大更新**（GCM 挂死根因）：system config 的 `credential.helper` 链实际走 GCM，GCM 无凭据时会**交互式挂起**（push POST 阶段无限等待，ls-remote 有时反而能过）；`-c credential.helper=store` **不会覆盖** system 链。**可靠配方 = token 嵌 URL + 禁 helper**：
+  1. 取 token：`python C:/creategame/Github-app/scripts/_get_installation_token_for_git.py`（App 私钥→installation token，1 小时有效，写入 `C:/Users/21142/.git-credentials`；httpx 新版参数是 `proxy=` 单数）
+  2. 推送：`TOKEN=$(sed -n 's|^https://x-access-token:\([^@]*\)@github.com$|\1|p' ~/.git-credentials) && git -c credential.helper= -c http.proxy=http://127.0.0.1:65532 -c http.sslVerify=false push "https://x-access-token:$TOKEN@github.com/egg-Li-dd/eggli-flashcard-app.git" main`
+  3. 直连 GitHub 被墙，代理必加；`GIT_TERMINAL_PROMPT=0` 必须用环境变量前缀（`-c` 会报 "key does not contain a section"）
 - 完整配方与根因分析见根目录 `上传失败诊断说明.md`
+
+## 清理进度（2026-09-26 更新）
+
+- 已完成批次 1-6：构建产物 1286MB、.trae 189 文件、34 脚本、死代码 5505 行、**Tailscale 全模块（9 文件含 69MB AAR，提交 6add5a1）**
+- 归档目录：项目外 `../_cleanup_archive_2026-09-20/` 与 `../_cleanup_archive_2026-09-26/`（保留原目录结构，可 mv 回原位）
+- **Tailscale 移除要点**：pcEngine.js 的 fetchViaTailscale 已换 `pcRequest()`（fetch + AbortSignal.timeout，返回 {statusCode, body} 兼容形状）；jna 依赖保留（vosk 需要）；FOREGROUND_SERVICE_VPN 权限已删
+- 待办批次：5 PaddleOCR（浅耦合，3 文件）→ 7 PC 引擎（15 文件 700+ 引用、aiService 7 处 callPcEngineAi、SettingsPcEngine 页，风险最高，需完整 APK 重建验证）
 
 ## 架构要点
 
@@ -25,7 +36,7 @@
 
 ## 关键词对照（避免误判）
 
-- 「PC 引擎」= 跑在用户电脑上的 OCR/AI 引擎管理台，端口 19000，经 Tailscale 或局域网访问
+- 「PC 引擎」= 跑在用户电脑上的 OCR/AI 引擎管理台，端口 19000，局域网直连访问（Tailscale 已于 2026-09-26 移除）
 - 「自建 PaddleOCR」= Python FastAPI 服务，端口 8000，在 `paddleocr_server/`
 - `paddleOcrLocal.js` = **前端** WebView 内离线推理，与后端无关，勿删
 

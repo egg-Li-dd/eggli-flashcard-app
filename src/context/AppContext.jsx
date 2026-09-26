@@ -218,11 +218,15 @@ const initialState = {
   aiDebugPanel: localStorage.getItem('app_ai_debug_panel') === 'true',
   // OCR 自动生成卡片开关
   ocrAutoGenerate: localStorage.getItem(STORAGE_KEYS.OCR_AUTO_GENERATE) !== 'false',
-  // 图像识别引擎配置
-  ocrEngine: localStorage.getItem(STORAGE_KEYS.OCR_ENGINE) || 'ai-model',
-  paddleocrServerUrl: localStorage.getItem(STORAGE_KEYS.PADDLEOCR_SERVER_URL) || '',
-  paddleocrApiToken: localStorage.getItem(STORAGE_KEYS.PADDLEOCR_API_TOKEN) || '',
-  paddleocrLanguage: localStorage.getItem(STORAGE_KEYS.PADDLEOCR_LANGUAGE) || 'ch',
+  // 图像识别引擎配置（自建 PaddleOCR 服务已下线，旧值一次性迁移）
+  ocrEngine: (() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.OCR_ENGINE)
+    if (saved === 'paddleocr-server') {
+      localStorage.setItem(STORAGE_KEYS.OCR_ENGINE, 'ai-model')
+      return 'ai-model'
+    }
+    return saved || 'ai-model'
+  })(),
   baiduOcrApiKey: localStorage.getItem(STORAGE_KEYS.BAIDU_OCR_API_KEY) || '',
   baiduOcrSecretKey: localStorage.getItem(STORAGE_KEYS.BAIDU_OCR_SECRET_KEY) || '',
   tesseractLanguage: localStorage.getItem(STORAGE_KEYS.TESSERACT_LANGUAGE) || 'chi_sim+eng',
@@ -335,15 +339,6 @@ function reducer(state, action) {
     case 'SET_OCR_ENGINE':
       localStorage.setItem(STORAGE_KEYS.OCR_ENGINE, action.payload)
       return { ...state, ocrEngine: action.payload }
-    case 'SET_PADDLEOCR_SERVER_URL':
-      localStorage.setItem(STORAGE_KEYS.PADDLEOCR_SERVER_URL, action.payload)
-      return { ...state, paddleocrServerUrl: action.payload }
-    case 'SET_PADDLEOCR_API_TOKEN':
-      localStorage.setItem(STORAGE_KEYS.PADDLEOCR_API_TOKEN, action.payload)
-      return { ...state, paddleocrApiToken: action.payload }
-    case 'SET_PADDLEOCR_LANGUAGE':
-      localStorage.setItem(STORAGE_KEYS.PADDLEOCR_LANGUAGE, action.payload)
-      return { ...state, paddleocrLanguage: action.payload }
     case 'SET_BAIDU_OCR_API_KEY':
       localStorage.setItem(STORAGE_KEYS.BAIDU_OCR_API_KEY, action.payload)
       return { ...state, baiduOcrApiKey: action.payload }
@@ -585,8 +580,6 @@ export function AppProvider({ children }) {
           dashscopeModel: STORAGE_KEYS.DASHSCOPE_MODEL,
           ocrAutoGenerate: STORAGE_KEYS.OCR_AUTO_GENERATE,
           ocrEngine: STORAGE_KEYS.OCR_ENGINE,
-          paddleocrServerUrl: STORAGE_KEYS.PADDLEOCR_SERVER_URL,
-          paddleocrLanguage: STORAGE_KEYS.PADDLEOCR_LANGUAGE,
         }
         const storageKey = storageKeyMap[key]
         if (storageKey) {
@@ -634,8 +627,6 @@ export function AppProvider({ children }) {
           dashscopeModel: 'SET_DASHSCOPE_MODEL',
           ocrAutoGenerate: 'SET_OCR_AUTO_GENERATE',
           ocrEngine: 'SET_OCR_ENGINE',
-          paddleocrServerUrl: 'SET_PADDLEOCR_SERVER_URL',
-          paddleocrLanguage: 'SET_PADDLEOCR_LANGUAGE',
         }
         const actionType = actionTypeMap[key]
         if (actionType) {
@@ -1074,15 +1065,6 @@ export function AppProvider({ children }) {
   const setOcrEngine = useCallback((engine) => {
     dispatch({ type: 'SET_OCR_ENGINE', payload: engine })
   }, [])
-  const setPaddleocrServerUrl = useCallback((url) => {
-    dispatch({ type: 'SET_PADDLEOCR_SERVER_URL', payload: url })
-  }, [])
-  const setPaddleocrApiToken = useCallback((token) => {
-    dispatch({ type: 'SET_PADDLEOCR_API_TOKEN', payload: token })
-  }, [])
-  const setPaddleocrLanguage = useCallback((lang) => {
-    dispatch({ type: 'SET_PADDLEOCR_LANGUAGE', payload: lang })
-  }, [])
   const setBaiduOcrApiKey = useCallback((key) => {
     dispatch({ type: 'SET_BAIDU_OCR_API_KEY', payload: key })
   }, [])
@@ -1506,9 +1488,6 @@ export function AppProvider({ children }) {
     setAiDebugPanel,
     setOcrAutoGenerate,
     setOcrEngine,
-    setPaddleocrServerUrl,
-    setPaddleocrApiToken,
-    setPaddleocrLanguage,
     setBaiduOcrApiKey,
     setBaiduOcrSecretKey,
     setTesseractLanguage,

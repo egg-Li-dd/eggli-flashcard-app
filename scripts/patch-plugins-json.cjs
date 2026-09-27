@@ -1,7 +1,6 @@
 // Capacitor sync hook: post-sync patches
-// 1. Adds AudioRecorder custom plugin to capacitor.plugins.json
-// 2. Adds VoskASR custom plugin to capacitor.plugins.json
-// 3. Patches android/capacitor-cordova-android-plugins/build.gradle for AGP 9.x
+// 1. Adds custom plugins (AudioRecorder/VoskASR/SystemFloatingWindow) to capacitor.plugins.json
+// 2. Patches android/capacitor-cordova-android-plugins/build.gradle for AGP 9.x
 // Runs AFTER npx cap sync
 
 var fs = require("fs");
@@ -21,10 +20,6 @@ var customPlugins = [
   {
     pkg: "VoskASR",
     classpath: "com.eggli.flashcards.plugins.VoskASRPlugin"
-  },
-  {
-    pkg: "TailscaleVPN",
-    classpath: "com.eggli.flashcards.plugins.TailscaleVPNPlugin"
   },
   {
     pkg: "SystemFloatingWindow",
